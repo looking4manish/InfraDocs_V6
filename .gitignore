@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Node / Frontend
+node_modules/
+frontend/dist/
+.npm
+
+# Logs & runtime
+logs/
+*.log
+*.pid
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.bak
+*.backup
+
+# Local config overrides
+config.local.yml
+.env
+.env.local
+
+# Build artifacts
+build/
+dist/

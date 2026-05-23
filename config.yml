@@ -1,0 +1,46 @@
+# InfraDocs V6 Configuration — OCI-only
+# V6 collapses V5's distributed architecture to a single host.
+# Multi-server support will be reintroduced after V6 reaches production quality.
+
+server:
+  id: oci
+  name: "OCI Cloud Server"
+  api_port: 8004
+
+features:
+  scanner_enabled: true
+  api_enabled: true
+  frontend_enabled: true
+
+mongodb:
+  # Connection URI loaded from env var named below. Never commit a URI to git.
+  uri_env: INFRADOCS_MONGO_URI
+  database: infradocs
+
+paths:
+  projects_root: /home/msinha/projects
+  data_root: /data/infradocs
+  logs_dir: logs
+  artifacts_dir: artifacts
+
+scanning:
+  schedule: "0 */6 * * *"
+  timeout: 300
+  enabled_scanners:
+    - docker
+    - compose
+    - systemd
+    - port
+    - nginx
+    - storage
+
+logging:
+  level: INFO
+  format: json
+  retention_days: 30
+
+auth:
+  username: msinha
+  # password is read from env INFRADOCS_API_PASSWORD; falls back to dev default
+  password_env: INFRADOCS_API_PASSWORD
+  dev_password: msinha123
