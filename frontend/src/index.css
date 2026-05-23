@@ -1,0 +1,14 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", Arial, sans-serif;
+  background: #0b1220;
+  color: #e5e7eb;
+}
+
+* { box-sizing: border-box; }
+a { color: inherit; text-decoration: none; }
