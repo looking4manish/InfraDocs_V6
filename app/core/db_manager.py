@@ -85,6 +85,40 @@ class DBManager:
         logger.info(f"Deleted {result.deleted_count} assets")
         return result.deleted_count
 
+    # ---------- applications ----------
+
+    def upsert_application(self, app: Dict) -> bool:
+        query = {"application_id": app["application_id"]}
+        now = datetime.now(timezone.utc)
+        app.setdefault("created_at", now)
+        app["updated_at"] = now
+        result = self.db.applications.update_one(query, {"$set": app}, upsert=True)
+        return result.acknowledged
+
+    def get_applications(self) -> List[Dict]:
+        apps = list(self.db.applications.find({}))
+        for a in apps:
+            a["_id"] = str(a["_id"])
+        return apps
+
+    def get_application(self, name: str) -> Optional[Dict]:
+        app = self.db.applications.find_one({"name": name})
+        if app:
+            app["_id"] = str(app["_id"])
+        return app
+
+    def replace_applications(self, new_apps: List[Dict]) -> int:
+        """Wipe and rewrite the applications collection — used by correlator."""
+        self.db.applications.delete_many({})
+        if not new_apps:
+            return 0
+        now = datetime.now(timezone.utc)
+        for a in new_apps:
+            a.setdefault("created_at", now)
+            a["updated_at"] = now
+        self.db.applications.insert_many(new_apps)
+        return len(new_apps)
+
     # ---------- projects ----------
 
     def upsert_project(self, project: Dict) -> bool:
@@ -128,6 +162,10 @@ class DBManager:
         self.db.assets.create_index([("updated_at", DESCENDING)])
 
         self.db.projects.create_index("project_name", unique=True)
+
+        self.db.applications.create_index("name", unique=True)
+        self.db.applications.create_index("application_id", unique=True)
+        self.db.applications.create_index("internet_exposed")
 
         self.db.scan_logs.create_index([("created_at", DESCENDING)])
 

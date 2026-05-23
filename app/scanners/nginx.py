@@ -7,10 +7,73 @@ blocks. V6 uses a brace-balanced extractor that handles arbitrary nesting.
 
 import re
 import shutil
+import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.scanners.base import BaseScanner
+
+
+def _read_cert_info(cert_path: str) -> Dict[str, Any]:
+    """Read SSL cert issuer + expiry. Returns empty dict on any failure."""
+    if not cert_path:
+        return {}
+    try:
+        if not Path(cert_path).exists():
+            return {}
+    except (OSError, PermissionError):
+        # /etc/letsencrypt/live is typically root:root 0700 — we can't even
+        # stat the dir. Try the openssl command anyway; it may have CAP_DAC.
+        pass
+    try:
+        result = subprocess.run(
+            ["openssl", "x509", "-noout", "-issuer", "-enddate", "-in", cert_path],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except Exception:
+        return {}
+    if result.returncode != 0:
+        return {}
+    info = {}
+    for line in result.stdout.splitlines():
+        if line.startswith("issuer="):
+            info["issuer"] = line[len("issuer=") :].strip()
+        elif line.startswith("notAfter="):
+            info["not_after"] = line[len("notAfter=") :].strip()
+    info["cloudflare_origin"] = "Cloudflare" in info.get("issuer", "")
+    return info
+
+
+def _extract_listen_ports(listen_directives: List[str]) -> List[int]:
+    """Turn ['443 ssl', '[::]:443 ssl', '80'] into [443, 443, 80] (deduped)."""
+    ports = set()
+    for d in listen_directives:
+        # First token holds the addr:port (or just port)
+        first = d.strip().split()[0] if d.strip() else ""
+        if ":" in first:
+            first = first.rsplit(":", 1)[-1]
+        try:
+            ports.add(int(first))
+        except ValueError:
+            continue
+    return sorted(ports)
+
+
+def _parse_upstream(upstream: str) -> Tuple[Optional[str], Optional[int]]:
+    """'localhost:8080' or '127.0.0.1:8080/foo' -> ('localhost', 8080)."""
+    if not upstream:
+        return (None, None)
+    host_port = upstream.split("/", 1)[0]
+    if ":" in host_port:
+        host, port = host_port.rsplit(":", 1)
+        try:
+            return (host, int(port))
+        except ValueError:
+            return (host, None)
+    return (host_port, None)
 
 
 NGINX_CONFIG_DIRS = (
@@ -97,25 +160,31 @@ class NginxScanner(BaseScanner):
         server_name = primary_names[0]
 
         listen = re.findall(r"\blisten\s+([^;]+);", block)
-        upstream_match = re.search(r"\bproxy_pass\s+https?://([^/;]+)", block)
+        listen_ports = _extract_listen_ports(listen)
+
+        upstream_match = re.search(r"\bproxy_pass\s+https?://([^/;\s]+)", block)
         upstream = upstream_match.group(1) if upstream_match else ""
+        upstream_host, upstream_port = _parse_upstream(upstream)
 
         ssl_cert_match = re.search(r"\bssl_certificate\s+([^;]+);", block)
-        has_ssl = bool(ssl_cert_match) or any("ssl" in l for l in listen)
+        ssl_cert_path = ssl_cert_match.group(1).strip() if ssl_cert_match else None
+        has_ssl = bool(ssl_cert_path) or 443 in listen_ports
+
+        cert_info = _read_cert_info(ssl_cert_path) if ssl_cert_path else {}
 
         # Asset id needs the listen port too — a single file commonly defines
         # both an HTTP redirect block (`listen 80`) and an HTTPS block
         # (`listen 443 ssl`) for the same server_name.
-        listen_port = "?"
-        if listen:
-            first_listen = listen[0].strip().split()[0]
-            listen_port = first_listen.split(":")[-1] if ":" in first_listen else first_listen
+        listen_port_for_id = (
+            str(listen_ports[0]) if listen_ports else "?"
+        )
 
         project = self.project_detector.get_project_from_domain(server_name)
+        internet_exposed = has_ssl and 443 in listen_ports
 
         return self.create_asset(
             category="nginx_server_block",
-            asset_id=f"{self.server_id}:nginx:{path.name}:{server_name}:{listen_port}",
+            asset_id=f"{self.server_id}:nginx:{path.name}:{server_name}:{listen_port_for_id}",
             name=server_name,
             status="configured",
             project=project,
@@ -123,11 +192,21 @@ class NginxScanner(BaseScanner):
                 "config_file": str(path),
                 "server_names": primary_names,
                 "listen": [l.strip() for l in listen],
+                "listen_ports": listen_ports,
                 "upstream": upstream,
+                "upstream_host": upstream_host,
+                "upstream_port": upstream_port,
                 "has_ssl": has_ssl,
-                "ssl_certificate": ssl_cert_match.group(1).strip()
-                if ssl_cert_match
-                else None,
+                "ssl_certificate": ssl_cert_path,
+                "ssl_issuer": cert_info.get("issuer"),
+                "ssl_not_after": cert_info.get("not_after"),
+                "cloudflare_origin": cert_info.get("cloudflare_origin", False),
+                "internet_exposed": internet_exposed,
+                "url": f"https://{server_name}" if internet_exposed else None,
             },
-            health_indicators={"has_ssl": has_ssl, "has_upstream": bool(upstream)},
+            health_indicators={
+                "has_ssl": has_ssl,
+                "has_upstream": bool(upstream),
+                "internet_exposed": internet_exposed,
+            },
         )

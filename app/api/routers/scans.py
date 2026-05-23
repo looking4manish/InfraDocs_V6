@@ -11,6 +11,7 @@ from app.api.dependencies import get_config, get_db, verify_auth
 from app.core.config_loader import Config
 from app.core.db_manager import DBManager
 from app.core.project_detector import ProjectDetector
+from app.correlator import correlate
 from app.scanners.registry import SCANNERS
 
 router = APIRouter()
@@ -39,7 +40,7 @@ def _run_scan_job(scan_id: str, cfg: Config):
 
     pd = ProjectDetector(projects_root=cfg.paths.projects_root)
     per_scanner = []
-    total_assets = 0
+    all_assets = []
     failed = []
 
     for name in cfg.scanning.enabled_scanners:
@@ -59,9 +60,17 @@ def _run_scan_job(scan_id: str, cfg: Config):
         )
         for asset in result["assets"]:
             db.upsert_asset(asset)
-        total_assets += result["assets_found"]
+            all_assets.append(asset)
         if result["status"] == "failed":
             failed.append(result["scanner"])
+
+    # Correlation pass
+    applications = correlate(
+        all_assets,
+        server_id=cfg.server.id,
+        projects_root=cfg.paths.projects_root,
+    )
+    apps_written = db.replace_applications(applications)
 
     finished = datetime.now(timezone.utc)
     db.db.scan_logs.update_one(
@@ -71,7 +80,8 @@ def _run_scan_job(scan_id: str, cfg: Config):
                 "status": "failed" if failed else "success",
                 "finished_at": finished,
                 "duration_seconds": (finished - started).total_seconds(),
-                "total_assets": total_assets,
+                "total_assets": len(all_assets),
+                "applications_built": apps_written,
                 "scanners": per_scanner,
                 "failed_scanners": failed,
             }

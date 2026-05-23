@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT / ".env", override=False)
 
 from app.api.dependencies import get_config, get_db  # noqa: E402
-from app.api.routers import assets, health, projects, scans  # noqa: E402
+from app.api.routers import applications, assets, health, projects, scans  # noqa: E402
 from app.core.logger import setup_logger  # noqa: E402
 
 
@@ -49,6 +49,7 @@ app.add_middleware(
 app.include_router(health.router, prefix="/api", tags=["health"])
 app.include_router(assets.router, prefix="/api/assets", tags=["assets"])
 app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
+app.include_router(applications.router, prefix="/api/applications", tags=["applications"])
 app.include_router(scans.router, prefix="/api/scans", tags=["scans"])
 
 

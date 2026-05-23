@@ -15,6 +15,7 @@ from app.core.config_loader import load_config
 from app.core.db_manager import DBManager
 from app.core.logger import get_scan_logger, setup_logger
 from app.core.project_detector import ProjectDetector
+from app.correlator import correlate
 from app.scanners.registry import SCANNERS
 
 
@@ -70,6 +71,14 @@ def run_scan(args):
         if db.upsert_asset(asset):
             written += 1
 
+    # Application correlation: join raw assets into application docs.
+    applications = correlate(
+        all_assets,
+        server_id=cfg.server.id,
+        projects_root=cfg.paths.projects_root,
+    )
+    apps_written = db.replace_applications(applications)
+
     duration = (datetime.now(timezone.utc) - start).total_seconds()
     status = "success" if all(r["status"] != "failed" for r in per_scanner) else "partial"
 
@@ -79,6 +88,7 @@ def run_scan(args):
             "duration_seconds": duration,
             "total_assets": len(all_assets),
             "assets_written": written,
+            "applications_built": apps_written,
             "scanners": per_scanner,
             "status": status,
         }
@@ -90,6 +100,7 @@ def run_scan(args):
     print(f"  scanners: {len(scanners)}")
     print(f"  assets discovered: {len(all_assets)}")
     print(f"  assets written: {written}")
+    print(f"  applications correlated: {apps_written}")
     failed = [r["scanner"] for r in per_scanner if r["status"] == "failed"]
     if failed:
         print(f"  ⚠ failed: {', '.join(failed)}")

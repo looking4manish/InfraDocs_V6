@@ -1,11 +1,51 @@
 """Docker scanner — containers, images, volumes, networks."""
 
+import os
+import re
 from typing import Any, Dict, List
 
 import docker
 from docker.errors import DockerException
 
 from app.scanners.base import BaseScanner
+
+
+_SECRET_KEY_RE = re.compile(
+    r"(PASSWORD|PASSWD|SECRET|TOKEN|KEY|CREDENTIAL|API[_-]?KEY|PRIVATE|AUTH)",
+    re.IGNORECASE,
+)
+
+
+def _split_env_keys(env_list):
+    """Take ['FOO=bar', 'PASSWORD=secret'] → list of keys; values dropped entirely.
+
+    We don't even keep redacted values. Just key names so the correlator can show
+    which config knobs an app reads.
+    """
+    keys = []
+    for item in env_list or []:
+        if "=" in item:
+            keys.append(item.split("=", 1)[0])
+        else:
+            keys.append(item)
+    return keys
+
+
+def _dir_size_bytes(path: str) -> int:
+    """Sum file sizes under `path`. Skips on permission/oserror."""
+    if not path or not os.path.isdir(path):
+        return 0
+    total = 0
+    try:
+        for root, dirs, files in os.walk(path, followlinks=False):
+            for f in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, f))
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return total
 
 
 class DockerScanner(BaseScanner):
@@ -48,25 +88,45 @@ class DockerScanner(BaseScanner):
                 )
 
                 ports = []
+                host_ports = []
                 for cport, bindings in (c.ports or {}).items():
                     for b in bindings or []:
+                        hp = b.get("HostPort")
                         ports.append(
                             {
                                 "container_port": cport,
-                                "host_port": b.get("HostPort"),
+                                "host_port": hp,
                                 "host_ip": b.get("HostIp", "0.0.0.0"),
                             }
                         )
+                        if hp:
+                            try:
+                                host_ports.append(int(hp))
+                            except ValueError:
+                                pass
 
-                mounts = [
-                    {
+                mounts = []
+                bind_mount_sources = []
+                volume_names = []
+                for m in c.attrs.get("Mounts", []):
+                    mt = {
                         "type": m.get("Type"),
                         "source": m.get("Source"),
                         "destination": m.get("Destination"),
                         "mode": m.get("Mode"),
                     }
-                    for m in c.attrs.get("Mounts", [])
-                ]
+                    if m.get("Name"):
+                        mt["name"] = m["Name"]
+                        volume_names.append(m["Name"])
+                    mounts.append(mt)
+                    if m.get("Type") == "bind" and m.get("Source"):
+                        bind_mount_sources.append(m["Source"])
+
+                cfg = c.attrs.get("Config", {}) or {}
+                host_cfg = c.attrs.get("HostConfig", {}) or {}
+                healthcheck = cfg.get("Healthcheck") or {}
+                env_keys = _split_env_keys(cfg.get("Env"))
+                restart_policy = (host_cfg.get("RestartPolicy") or {}).get("Name")
 
                 health = {
                     "running": c.status == "running",
@@ -93,10 +153,31 @@ class DockerScanner(BaseScanner):
                             "image": image_name,
                             "labels": labels,
                             "ports": ports,
+                            "host_ports": sorted(set(host_ports)),
                             "mounts": mounts,
-                            "network_mode": c.attrs.get("HostConfig", {}).get(
-                                "NetworkMode"
+                            "bind_mount_sources": bind_mount_sources,
+                            "volume_names": volume_names,
+                            "network_mode": host_cfg.get("NetworkMode"),
+                            "networks": list(
+                                (c.attrs.get("NetworkSettings", {}) or {})
+                                .get("Networks", {})
+                                .keys()
                             ),
+                            "compose_project": labels.get("com.docker.compose.project"),
+                            "compose_service": labels.get("com.docker.compose.service"),
+                            "compose_working_dir": labels.get(
+                                "com.docker.compose.project.working_dir"
+                            ),
+                            "compose_config_files": labels.get(
+                                "com.docker.compose.project.config_files"
+                            ),
+                            "cmd": cfg.get("Cmd"),
+                            "entrypoint": cfg.get("Entrypoint"),
+                            "working_dir": cfg.get("WorkingDir"),
+                            "env_keys": env_keys,
+                            "restart_policy": restart_policy,
+                            "healthcheck_defined": bool(healthcheck),
+                            "healthcheck_test": healthcheck.get("Test"),
                             "created": c.attrs.get("Created"),
                             "started_at": c.attrs.get("State", {}).get("StartedAt"),
                         },
@@ -165,6 +246,8 @@ class DockerScanner(BaseScanner):
                 labels = v.attrs.get("Labels") or {}
                 project = self.project_detector.get_project_from_container(labels, "")
                 in_use = v.name in in_use_names
+                mountpoint = v.attrs.get("Mountpoint") or ""
+                size_bytes = _dir_size_bytes(mountpoint)
                 assets.append(
                     self.create_asset(
                         category="docker_volume",
@@ -174,8 +257,10 @@ class DockerScanner(BaseScanner):
                         project=project,
                         metadata={
                             "driver": v.attrs.get("Driver"),
-                            "mountpoint": v.attrs.get("Mountpoint"),
+                            "mountpoint": mountpoint,
+                            "size_bytes": size_bytes,
                             "labels": labels,
+                            "compose_project": labels.get("com.docker.compose.project"),
                             "created": v.attrs.get("CreatedAt"),
                         },
                         health_indicators={"in_use": in_use},
