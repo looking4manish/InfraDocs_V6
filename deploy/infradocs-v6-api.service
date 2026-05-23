@@ -1,0 +1,23 @@
+[Unit]
+Description=InfraDocs V6 FastAPI backend
+After=network.target mongod.service
+Wants=network.target
+
+[Service]
+Type=exec
+User=msinha
+Group=msinha
+WorkingDirectory=/home/msinha/projects/InfraDocs_V6
+EnvironmentFile=/home/msinha/projects/InfraDocs_V6/.env
+ExecStart=/home/msinha/projects/InfraDocs_V6/venv/bin/python -m uvicorn app.api.main:app --host 127.0.0.1 --port 8004
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/home/msinha/projects/InfraDocs_V6/logs/api.service.log
+StandardError=append:/home/msinha/projects/InfraDocs_V6/logs/api.service.log
+
+# Light hardening — full hardening can wait for Phase 8.
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
