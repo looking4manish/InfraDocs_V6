@@ -22,7 +22,17 @@ from app.core.db_manager import DBManager
 
 
 PHASE7_TEST_DB = "infradocs_phase7_test"
-AUTH = ("msinha", "msinha123")
+
+
+def _resolve_auth():
+    _cfg = load_config(str(ROOT / "config.yml"))
+    return (
+        _cfg.auth.username,
+        os.environ.get(_cfg.auth.password_env) or _cfg.auth.dev_password,
+    )
+
+
+AUTH = _resolve_auth()
 
 
 @pytest.fixture(scope="module")
