@@ -1,12 +1,16 @@
 import axios from "axios";
 
+// No hardcoded password fallback — the deployed JS bundle must not contain
+// real credentials. If localStorage is empty (first visit, post-cache-clear,
+// fresh browser), we send an empty password; the API returns 401 with a
+// WWW-Authenticate: Basic header, and the browser shows its native auth
+// prompt. setCreds() persists what the user types for subsequent loads.
 const DEV_USER = "msinha";
-const DEV_PASS = "msinha123";
 
 export function getCreds() {
   return {
     username: localStorage.getItem("ifd_user") || DEV_USER,
-    password: localStorage.getItem("ifd_pass") || DEV_PASS,
+    password: localStorage.getItem("ifd_pass") || "",
   };
 }
 
@@ -26,6 +30,24 @@ api.interceptors.request.use((config) => {
   config.headers.Authorization = `Basic ${token}`;
   return config;
 });
+
+// On 401, persist the failed creds → "" so the next request from this page
+// load also fails cleanly (instead of looping with stale auth). The browser
+// catches the 401+WWW-Authenticate and shows its native prompt.
+api.interceptors.response.use(
+  (r) => r,
+  (err) => {
+    if (err?.response?.status === 401) {
+      const { password } = getCreds();
+      if (password) {
+        // Persisted creds are wrong — clear them so the next request triggers
+        // the browser auth dialog instead of silently reusing the bad pass.
+        localStorage.removeItem("ifd_pass");
+      }
+    }
+    return Promise.reject(err);
+  }
+);
 
 export const endpoints = {
   health: () => api.get("/api/health"),
