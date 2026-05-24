@@ -18,6 +18,7 @@ from app.core.project_detector import ProjectDetector
 from app.correlator import SYSTEM_BUCKET, correlate
 from app.ports_registry import build_ports_registry
 from app.scanners.registry import SCANNERS
+from app.storage_registry import build_storage_registry
 
 
 def audit_ownership(
@@ -130,6 +131,15 @@ def run_scan(args):
     )
     ports_written = db.replace_ports(ports)
 
+    # Storage registry (Phase 7C) — mounts + volumes + project trees + binds.
+    storage_rows = build_storage_registry(
+        all_assets,
+        server_id=cfg.server.id,
+        projects_root=cfg.paths.projects_root,
+        valid_projects=pd.list_projects() + [SYSTEM_BUCKET],
+    )
+    storage_written = db.replace_storage(storage_rows)
+
     duration = (datetime.now(timezone.utc) - start).total_seconds()
     status = "success" if all(r["status"] != "failed" for r in per_scanner) else "partial"
 
@@ -141,6 +151,7 @@ def run_scan(args):
             "assets_written": written,
             "applications_built": apps_written,
             "ports_registered": ports_written,
+            "storage_registered": storage_written,
             "scanners": per_scanner,
             "ownership_audit": {
                 "ok": audit["ok"],
@@ -160,6 +171,7 @@ def run_scan(args):
     print(f"  assets written: {written}")
     print(f"  applications correlated: {apps_written}")
     print(f"  ports registered: {ports_written}")
+    print(f"  storage entities registered: {storage_written}")
     failed = [r["scanner"] for r in per_scanner if r["status"] == "failed"]
     if failed:
         print(f"  ⚠ failed: {', '.join(failed)}")

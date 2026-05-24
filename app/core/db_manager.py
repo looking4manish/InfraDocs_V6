@@ -157,6 +157,34 @@ class DBManager:
             p["_id"] = str(p["_id"])
         return ports
 
+    # ---------- storage registry (Phase 7C) ----------
+
+    def replace_storage(self, new_rows: List[Dict]) -> int:
+        self.db.storage.delete_many({})
+        if not new_rows:
+            return 0
+        now = datetime.now(timezone.utc)
+        for r in new_rows:
+            r.setdefault("created_at", now)
+            r["updated_at"] = now
+        self.db.storage.insert_many(new_rows)
+        return len(new_rows)
+
+    def get_storage(
+        self,
+        kind: Optional[str] = None,
+        project: Optional[str] = None,
+    ) -> List[Dict]:
+        query: Dict = {}
+        if kind:
+            query["kind"] = kind
+        if project:
+            query["owner_project"] = project
+        rows = list(self.db.storage.find(query).sort([("kind", ASCENDING), ("name", ASCENDING)]))
+        for r in rows:
+            r["_id"] = str(r["_id"])
+        return rows
+
     # ---------- projects ----------
 
     def upsert_project(self, project: Dict) -> bool:
@@ -209,6 +237,10 @@ class DBManager:
         self.db.ports.create_index([("port", ASCENDING)])
         self.db.ports.create_index("owner_project")
         self.db.ports.create_index("state")
+
+        self.db.storage.create_index("storage_id", unique=True)
+        self.db.storage.create_index("kind")
+        self.db.storage.create_index("owner_project")
 
         self.db.scan_logs.create_index([("created_at", DESCENDING)])
 
