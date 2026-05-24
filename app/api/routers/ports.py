@@ -54,7 +54,7 @@ def ports_summary(
 @router.get("/probe")
 def probe_ports(
     range: str = Query(..., description="port range, e.g. 8000-9000 or 8080"),
-    proto: str = Query("tcp", regex="^(tcp|udp)$"),
+    proto: str = Query("tcp", pattern="^(tcp|udp)$"),
     _: str = Depends(verify_auth),
 ):
     """Live `ss` snapshot of the requested port range. NOT persisted."""

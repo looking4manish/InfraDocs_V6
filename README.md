@@ -10,7 +10,7 @@ V6 is the rewrite of an earlier V5 that distributed scanning across multiple hos
 
 - **Discovers** infrastructure via six scanners: systemd (services + timers), docker (containers, images, volumes, networks), docker-compose files, nginx server blocks, listening network ports, and storage mounts.
 - **Correlates** the flat scan output into per-application documents (the heart of V6 — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)).
-- **Exposes** the data through a FastAPI service (`/api/applications`, `/api/assets`, `/api/projects`, `/api/scans`).
+- **Exposes** the data through a FastAPI service (`/api/applications`, `/api/assets`, `/api/projects`, `/api/ports`, `/api/storage`, `/api/scans`).
 - **Visualizes** it through a React+Vite frontend with dark theme, filterable asset tables, and a scan trigger.
 
 ## Quick start (local dev)
@@ -58,7 +58,7 @@ For a real "expose to internet via nginx" deploy (Ubuntu/Debian), the scripts in
 python -m pytest tests/ -v
 ```
 
-The suite is 51 tests covering scanner contracts, application correlation logic, and FastAPI endpoints with a real MongoDB. Integration tests are skipped automatically if `INFRADOCS_MONGO_URI` is not set.
+The suite is 89 tests covering scanner contracts, application correlation logic, ports/storage registries, the ownership audit, and FastAPI endpoints with a real MongoDB. Integration tests are skipped automatically if `INFRADOCS_MONGO_URI` is not set.
 
 ## Project layout
 
@@ -93,8 +93,9 @@ The suite is 51 tests covering scanner contracts, application correlation logic,
 | 4 Frontend | ✅ (awaiting UI polish round) |
 | 5 Scanner enrichment + Application correlation | ✅ |
 | 6 Nginx exposure | ✅ |
-| 7 Operational controls | pending |
-| 8 UI polish | pending |
+| 7 Project/System linkage + Ports registry + Storage registry | ✅ |
+| 8 Operational controls | pending |
+| 9 UI polish | pending |
 
 See [`docs/phases/`](docs/phases/) for the build journal — each phase has a status doc covering scope, decisions, bugs caught, and what landed.
 
