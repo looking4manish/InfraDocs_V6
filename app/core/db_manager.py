@@ -119,6 +119,44 @@ class DBManager:
         self.db.applications.insert_many(new_apps)
         return len(new_apps)
 
+    # ---------- ports registry (Phase 7B) ----------
+
+    def replace_ports(self, new_ports: List[Dict]) -> int:
+        """Wipe and rewrite the ports collection — used by ports_registry."""
+        self.db.ports.delete_many({})
+        if not new_ports:
+            return 0
+        now = datetime.now(timezone.utc)
+        for p in new_ports:
+            p.setdefault("created_at", now)
+            p["updated_at"] = now
+        self.db.ports.insert_many(new_ports)
+        return len(new_ports)
+
+    def get_ports(
+        self,
+        state: Optional[str] = None,
+        project: Optional[str] = None,
+        port_min: Optional[int] = None,
+        port_max: Optional[int] = None,
+    ) -> List[Dict]:
+        query: Dict = {}
+        if state:
+            query["state"] = state
+        if project:
+            query["owner_project"] = project
+        if port_min is not None or port_max is not None:
+            rng: Dict = {}
+            if port_min is not None:
+                rng["$gte"] = port_min
+            if port_max is not None:
+                rng["$lte"] = port_max
+            query["port"] = rng
+        ports = list(self.db.ports.find(query).sort("port", ASCENDING))
+        for p in ports:
+            p["_id"] = str(p["_id"])
+        return ports
+
     # ---------- projects ----------
 
     def upsert_project(self, project: Dict) -> bool:
@@ -166,6 +204,11 @@ class DBManager:
         self.db.applications.create_index("name", unique=True)
         self.db.applications.create_index("application_id", unique=True)
         self.db.applications.create_index("internet_exposed")
+
+        self.db.ports.create_index("port_id", unique=True)
+        self.db.ports.create_index([("port", ASCENDING)])
+        self.db.ports.create_index("owner_project")
+        self.db.ports.create_index("state")
 
         self.db.scan_logs.create_index([("created_at", DESCENDING)])
 

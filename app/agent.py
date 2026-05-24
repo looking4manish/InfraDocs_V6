@@ -16,6 +16,7 @@ from app.core.db_manager import DBManager
 from app.core.logger import get_scan_logger, setup_logger
 from app.core.project_detector import ProjectDetector
 from app.correlator import SYSTEM_BUCKET, correlate
+from app.ports_registry import build_ports_registry
 from app.scanners.registry import SCANNERS
 
 
@@ -121,6 +122,14 @@ def run_scan(args):
     )
     apps_written = db.replace_applications(applications)
 
+    # Ports registry (Phase 7B) — evidence-based port inventory.
+    ports = build_ports_registry(
+        all_assets,
+        server_id=cfg.server.id,
+        valid_projects=pd.list_projects() + [SYSTEM_BUCKET],
+    )
+    ports_written = db.replace_ports(ports)
+
     duration = (datetime.now(timezone.utc) - start).total_seconds()
     status = "success" if all(r["status"] != "failed" for r in per_scanner) else "partial"
 
@@ -131,6 +140,7 @@ def run_scan(args):
             "total_assets": len(all_assets),
             "assets_written": written,
             "applications_built": apps_written,
+            "ports_registered": ports_written,
             "scanners": per_scanner,
             "ownership_audit": {
                 "ok": audit["ok"],
@@ -149,6 +159,7 @@ def run_scan(args):
     print(f"  assets discovered: {len(all_assets)}")
     print(f"  assets written: {written}")
     print(f"  applications correlated: {apps_written}")
+    print(f"  ports registered: {ports_written}")
     failed = [r["scanner"] for r in per_scanner if r["status"] == "failed"]
     if failed:
         print(f"  ⚠ failed: {', '.join(failed)}")
