@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT / ".env", override=False)
 
 from app.api.dependencies import get_config, get_db  # noqa: E402
-from app.api.routers import applications, assets, health, ports, projects, scans, storage  # noqa: E402
+from app.api.routers import actions, applications, assets, health, ports, projects, scans, storage  # noqa: E402
 from app.core.logger import setup_logger  # noqa: E402
 
 
@@ -53,6 +53,9 @@ app.include_router(applications.router, prefix="/api/applications", tags=["appli
 app.include_router(ports.router, prefix="/api/ports", tags=["ports"])
 app.include_router(storage.router, prefix="/api/storage", tags=["storage"])
 app.include_router(scans.router, prefix="/api/scans", tags=["scans"])
+# actions router declares its own /assets/{id}/action and /applications/{name}/action
+# paths plus /actions/* — mount it at /api so all three sit at the right URLs.
+app.include_router(actions.router, prefix="/api", tags=["actions"])
 
 
 @app.get("/")

@@ -185,6 +185,36 @@ class DBManager:
             r["_id"] = str(r["_id"])
         return rows
 
+    # ---------- actions log (Phase 8) ----------
+
+    def record_action(self, record: Dict) -> str:
+        record["timestamp"] = datetime.now(timezone.utc)
+        result = self.db.actions_log.insert_one(record)
+        return str(result.inserted_id)
+
+    def get_actions(
+        self,
+        asset_id: Optional[str] = None,
+        action: Optional[str] = None,
+        actor: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[Dict]:
+        query: Dict = {}
+        if asset_id:
+            query["asset_id"] = asset_id
+        if action:
+            query["action"] = action
+        if actor:
+            query["actor"] = actor
+        rows = list(
+            self.db.actions_log.find(query)
+            .sort("timestamp", DESCENDING)
+            .limit(limit)
+        )
+        for r in rows:
+            r["_id"] = str(r["_id"])
+        return rows
+
     # ---------- projects ----------
 
     def upsert_project(self, project: Dict) -> bool:
@@ -241,6 +271,11 @@ class DBManager:
         self.db.storage.create_index("storage_id", unique=True)
         self.db.storage.create_index("kind")
         self.db.storage.create_index("owner_project")
+
+        self.db.actions_log.create_index([("timestamp", DESCENDING)])
+        self.db.actions_log.create_index("asset_id")
+        self.db.actions_log.create_index("action")
+        self.db.actions_log.create_index("actor")
 
         self.db.scan_logs.create_index([("created_at", DESCENDING)])
 
