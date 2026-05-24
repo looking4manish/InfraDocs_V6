@@ -15,31 +15,61 @@ from app.core.config_loader import load_config
 from app.core.db_manager import DBManager
 from app.core.logger import get_scan_logger, setup_logger
 from app.core.project_detector import ProjectDetector
-from app.correlator import correlate
+from app.correlator import SYSTEM_BUCKET, correlate
 from app.scanners.registry import SCANNERS
 
 
-def build_scanners(enabled: List[str], server_id: str, projects_root: str):
-    pd = ProjectDetector(projects_root=projects_root)
-    instances = []
-    for name in enabled:
-        cls = SCANNERS.get(name)
-        if not cls:
-            print(f"⚠  unknown scanner: {name} (skipping)")
+def audit_ownership(
+    assets: List[Dict[str, Any]],
+    valid_projects: List[str],
+) -> Dict[str, Any]:
+    """Verify the Phase 7 ownership invariant on a freshly scanned asset set.
+
+    Every asset must carry a non-empty `project` that is either the literal
+    string "System" or one of the discovered project folder names. Returns a
+    report with counts and any offenders (does not raise).
+    """
+    valid = set(valid_projects) | {SYSTEM_BUCKET}
+    missing: List[Dict[str, str]] = []
+    unknown: List[Dict[str, str]] = []
+    by_project: Dict[str, int] = {}
+
+    for a in assets:
+        proj = a.get("project")
+        if not proj:
+            missing.append({"asset_id": a.get("asset_id", "?"), "category": a.get("category", "?")})
             continue
-        instances.append(cls(server_id=server_id, project_detector=pd))
-    return instances
+        by_project[proj] = by_project.get(proj, 0) + 1
+        if proj not in valid:
+            unknown.append(
+                {
+                    "asset_id": a.get("asset_id", "?"),
+                    "category": a.get("category", "?"),
+                    "project": proj,
+                }
+            )
+
+    return {
+        "total_assets": len(assets),
+        "missing_project": missing,
+        "unknown_project": unknown,
+        "by_project": by_project,
+        "ok": not missing and not unknown,
+    }
 
 
 def run_scan(args):
     cfg = load_config(args.config)
     logger = get_scan_logger("manual")
 
-    scanners = build_scanners(
-        cfg.scanning.enabled_scanners,
-        cfg.server.id,
-        cfg.paths.projects_root,
-    )
+    pd = ProjectDetector(projects_root=cfg.paths.projects_root)
+    scanners = []
+    for name in cfg.scanning.enabled_scanners:
+        cls = SCANNERS.get(name)
+        if not cls:
+            print(f"⚠  unknown scanner: {name} (skipping)")
+            continue
+        scanners.append(cls(server_id=cfg.server.id, project_detector=pd))
     print(f"✓ loaded {len(scanners)} scanners: {[s.scanner_name for s in scanners]}")
 
     db = DBManager(uri=cfg.mongodb.uri, database=cfg.mongodb.database)
@@ -61,6 +91,18 @@ def run_scan(args):
             }
         )
         all_assets.extend(result["assets"])
+
+    audit = audit_ownership(all_assets, pd.list_projects())
+    if not audit["ok"]:
+        logger.warning(
+            "ownership audit found issues: %d missing, %d unknown",
+            len(audit["missing_project"]),
+            len(audit["unknown_project"]),
+        )
+        for offender in audit["missing_project"][:10]:
+            logger.warning("missing project on %s", offender)
+        for offender in audit["unknown_project"][:10]:
+            logger.warning("unknown project on %s", offender)
 
     if not args.incremental:
         deleted = db.delete_all_assets()
@@ -90,6 +132,12 @@ def run_scan(args):
             "assets_written": written,
             "applications_built": apps_written,
             "scanners": per_scanner,
+            "ownership_audit": {
+                "ok": audit["ok"],
+                "missing_count": len(audit["missing_project"]),
+                "unknown_count": len(audit["unknown_project"]),
+                "by_project": audit["by_project"],
+            },
             "status": status,
         }
     )
@@ -117,11 +165,14 @@ def run_scan(args):
             print(f"  • {cat}: {count}")
         print()
         print("📋 by project:")
-        by_proj: Dict[str, int] = {}
-        for a in all_assets:
-            by_proj[a["project"]] = by_proj.get(a["project"], 0) + 1
-        for proj, count in sorted(by_proj.items(), key=lambda x: -x[1]):
+        for proj, count in sorted(audit["by_project"].items(), key=lambda x: -x[1]):
             print(f"  • {proj}: {count}")
+        print()
+        print(f"📋 ownership audit: {'✓ OK' if audit['ok'] else '⚠ ISSUES'}")
+        if audit["missing_project"]:
+            print(f"  • {len(audit['missing_project'])} assets missing project field")
+        if audit["unknown_project"]:
+            print(f"  • {len(audit['unknown_project'])} assets with unknown project")
 
     db.close()
 

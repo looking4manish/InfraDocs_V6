@@ -124,12 +124,18 @@ def _port(*, port, project="System"):
 
 
 def test_compose_seeds_an_app(tmp_path):
+    """A compose file under a project name produces a project app +
+    System always exists as a peer."""
     assets = [_compose(dir_name="openwebui")]
-    apps = correlate(assets, server_id="oci", projects_root=str(tmp_path))
-    assert len(apps) == 1
-    assert apps[0]["name"] == "openwebui"
-    assert apps[0]["compose_file"].endswith("docker-compose.yml")
-    assert apps[0]["type"] == "compose"
+    apps = {a["name"]: a for a in correlate(assets, server_id="oci", projects_root=str(tmp_path))}
+    # Every correlate() call yields a System bucket. Project apps are
+    # seeded for each ~/projects/* directory plus any project tag in
+    # the asset stream.
+    assert "System" in apps
+    assert "openwebui" in apps
+    assert apps["openwebui"]["compose_file"].endswith("docker-compose.yml")
+    assert apps["openwebui"]["type"] == "project"
+    assert apps["System"]["type"] == "system"
 
 
 def test_compose_app_links_container_via_label(tmp_path):
@@ -213,11 +219,12 @@ def test_nginx_links_via_domain_when_no_port_match(tmp_path):
 
 
 def test_systemd_seeds_app_for_non_compose_runtime(tmp_path):
+    """A project-tagged systemd unit attaches to its project app."""
     assets = [_systemd(name="raveuploader_rws.service", project="raveuploader_rws")]
     apps = {a["name"]: a for a in correlate(assets, server_id="oci", projects_root=str(tmp_path))}
     assert "raveuploader_rws" in apps
     assert apps["raveuploader_rws"]["systemd_units"] == ["raveuploader_rws.service"]
-    assert apps["raveuploader_rws"]["type"] == "systemd"
+    assert apps["raveuploader_rws"]["type"] == "project"
 
 
 def test_volume_attaches_via_compose_label(tmp_path):
@@ -251,23 +258,30 @@ def test_project_dir_size_picked_up(tmp_path):
     # Override the compose path so it lives under tmp_path
     assets[0]["metadata"]["file_path"] = str(proj / "docker-compose.yml")
 
-    apps = correlate(assets, server_id="oci", projects_root=str(tmp_path))
-    app = apps[0]
+    apps = {a["name"]: a for a in correlate(assets, server_id="oci", projects_root=str(tmp_path))}
+    app = apps["openwebui"]
     assert app["project_dir"] == str(proj)
     assert app["project_dir_size_bytes"] >= 3000
     assert app["total_size_bytes"] >= 3000
 
 
 def test_internet_exposed_propagates(tmp_path):
+    """A standalone (no-project) container + nginx still propagates exposure
+    flags — into the System bucket under the Phase 7 ownership model."""
     assets = [
         _container(name="webapp", project="System", host_ports=[5000]),
         _nginx(name="public.example.com", upstream_port=5000, has_443=True, cf=True),
     ]
     apps = {a["name"]: a for a in correlate(assets, server_id="oci", projects_root=str(tmp_path))}
-    # Container name doubles as app name since it's standalone
-    app = apps["webapp"]
-    assert app["internet_exposed"] is True
-    assert app["cloudflare"] is True
+    # webapp has no compose label / project tag / matching folder, so it
+    # lands in System and System inherits the exposure flags via the nginx
+    # upstream port linkage.
+    assert "webapp" not in apps
+    sys_app = apps["System"]
+    assert "webapp" in sys_app["containers"]
+    assert sys_app["internet_exposed"] is True
+    assert sys_app["cloudflare"] is True
+    assert sys_app["nginx_sites"] == ["public.example.com"]
 
 
 def test_components_count_aggregates(tmp_path):
@@ -285,8 +299,9 @@ def test_components_count_aggregates(tmp_path):
 
 
 def test_application_id_format(tmp_path):
-    apps = correlate([_compose(dir_name="x")], server_id="oci", projects_root=str(tmp_path))
-    assert apps[0]["application_id"] == "oci:app:x"
+    apps = {a["name"]: a for a in correlate([_compose(dir_name="x")], server_id="oci", projects_root=str(tmp_path))}
+    assert apps["x"]["application_id"] == "oci:app:x"
+    assert apps["System"]["application_id"] == "oci:app:System"
 
 
 # --------------------------- integration test -------------------------------

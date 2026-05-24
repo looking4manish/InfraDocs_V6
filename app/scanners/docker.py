@@ -83,8 +83,20 @@ class DockerScanner(BaseScanner):
             try:
                 labels = c.labels or {}
                 working_dir = c.attrs.get("Config", {}).get("WorkingDir", "")
+
+                # Pre-extract bind-mount sources so project resolution can
+                # use them as a fallback when the container has no compose
+                # label and the working_dir isn't a host path.
+                bind_sources_for_project = [
+                    m.get("Source")
+                    for m in c.attrs.get("Mounts", [])
+                    if m.get("Type") == "bind" and m.get("Source")
+                ]
                 project = self.project_detector.get_project_from_container(
-                    labels, working_dir
+                    labels,
+                    working_dir,
+                    bind_mounts=bind_sources_for_project,
+                    container_name=c.name,
                 )
 
                 ports = []
@@ -241,10 +253,35 @@ class DockerScanner(BaseScanner):
             self.add_error(f"list volumes: {e}")
             return assets
 
+        # Index volume → containers using it, for project inheritance.
+        volume_users = {}
+        for c in self.client.containers.list(all=True):
+            for m in c.attrs.get("Mounts", []):
+                if m.get("Name"):
+                    volume_users.setdefault(m["Name"], []).append(c)
+
         for v in volumes:
             try:
                 labels = v.attrs.get("Labels") or {}
                 project = self.project_detector.get_project_from_container(labels, "")
+                # Inherit project from any container using this volume.
+                if project == "System":
+                    for c in volume_users.get(v.name, []):
+                        c_labels = c.labels or {}
+                        c_binds = [
+                            m.get("Source")
+                            for m in c.attrs.get("Mounts", [])
+                            if m.get("Type") == "bind" and m.get("Source")
+                        ]
+                        inherited = self.project_detector.get_project_from_container(
+                            c_labels,
+                            c.attrs.get("Config", {}).get("WorkingDir", ""),
+                            bind_mounts=c_binds,
+                            container_name=c.name,
+                        )
+                        if inherited != "System":
+                            project = inherited
+                            break
                 in_use = v.name in in_use_names
                 mountpoint = v.attrs.get("Mountpoint") or ""
                 size_bytes = _dir_size_bytes(mountpoint)

@@ -57,13 +57,33 @@ class ProjectDetector:
         return "System"
 
     def get_project_from_container(
-        self, container_labels: dict, working_dir: str = ""
+        self,
+        container_labels: dict,
+        working_dir: str = "",
+        bind_mounts: List[str] = None,
+        container_name: str = "",
     ) -> str:
+        """Resolve a container's owning project.
+
+        Tries, in order: compose project label, working-dir path, bind-mount
+        source paths (any source under projects_root counts), and finally an
+        exact container-name match against a project folder name. The
+        bind-mount and name fallbacks catch containers that were `docker run`
+        rather than `docker compose up`.
+        """
         compose_project = container_labels.get("com.docker.compose.project")
         if compose_project and compose_project in self._project_dirs:
             return compose_project
         if working_dir:
-            return self.get_project_from_path(working_dir)
+            tagged = self.get_project_from_path(working_dir)
+            if tagged != "System":
+                return tagged
+        for src in bind_mounts or []:
+            tagged = self.get_project_from_path(src)
+            if tagged != "System":
+                return tagged
+        if container_name and container_name in self._project_dirs:
+            return container_name
         return "System"
 
     def get_project_from_domain(self, domain: str) -> str:

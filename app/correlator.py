@@ -1,20 +1,22 @@
 """Application correlator.
 
 Takes the flat `assets` collection (which the scanners produce) and joins
-related assets into `application` documents. One application aggregates
-everything Manish would need to see at a glance to understand or
-decommission a service: containers, compose file, nginx sites, exposed
-URLs, ports, volumes, on-disk paths and sizes, systemd units.
+related assets into `application` documents.
 
-The correlation runs in passes (each pass touches a different asset
-category). Pass order matters — port-mapping index built in pass 4 is what
-nginx server blocks key off in pass 5.
+**Ownership invariant (Phase 7):** every application is either
+  - a project bucket — one per subdirectory of `projects_root`, OR
+  - the single `System` bucket — everything that can't be tied to a project.
+
+Every asset emitted by the scanners is routed to exactly one of those
+buckets; nothing is silently dropped. The `System` app is therefore the
+catch-all that surfaces docker images, host-level mounts, host-level
+listening ports, and any container/service that doesn't live in a project
+directory.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
@@ -24,27 +26,34 @@ from app.scanners.docker import _dir_size_bytes
 logger = logging.getLogger(__name__)
 
 
-def _empty_app(name: str, *, source: str, type_: str) -> Dict[str, Any]:
+SYSTEM_BUCKET = "System"
+
+
+def _empty_app(name: str, *, source: Optional[str], type_: str) -> Dict[str, Any]:
+    """Empty application document. `type_` is "project" or "system"."""
     return {
         "name": name,
-        "type": type_,  # compose | systemd | project_dir | standalone-container
+        "type": type_,
         "source": source,
         "containers": [],
+        "images": [],
         "compose_file": None,
+        "compose_files": [],
         "systemd_units": [],
         "nginx_sites": [],
         "urls": [],
-        "port_mappings": [],  # [{host_port, container, container_port}]
+        "port_mappings": [],
         "listening_ports": [],
-        "volumes": [],  # [{name, mountpoint, size_bytes}]
+        "volumes": [],
         "networks": [],
         "storage_paths": [],
+        "storage_mounts": [],
         "project_dir": None,
         "project_dir_size_bytes": 0,
         "total_size_bytes": 0,
         "internet_exposed": False,
         "cloudflare": False,
-        "env_keys": [],  # union of env key names across containers/units
+        "env_keys": [],
         "components_count": 0,
     }
 
@@ -56,67 +65,74 @@ def _group(assets: Iterable[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
     return out
 
 
+def _project_dirs(projects_root: str) -> Set[str]:
+    root = Path(projects_root)
+    if not root.exists():
+        return set()
+    return {
+        p.name
+        for p in root.iterdir()
+        if p.is_dir() and not p.name.startswith(".")
+    }
+
+
 def correlate(
     assets: List[Dict[str, Any]],
     *,
     server_id: str,
     projects_root: str,
 ) -> List[Dict[str, Any]]:
-    """Run the correlation passes and return a list of application documents."""
+    """Run correlation and return one app document per project + one System app."""
     by_cat = _group(assets)
     apps: Dict[str, Dict[str, Any]] = {}
 
-    # ---- Pass 1: seed from compose files -----------------------------------
+    # ---- Pre-seed: project buckets + System -------------------------------
+    project_names = _project_dirs(projects_root)
+    for pname in project_names:
+        apps[pname] = _empty_app(
+            pname,
+            source=str(Path(projects_root) / pname),
+            type_="project",
+        )
+    # Also seed any project tag we see in scan output even if the dir is gone
+    # (or in tests where projects_root is a tmp_path). Keeps the invariant
+    # "every project-tagged asset has an app to land in".
+    for a in assets:
+        proj = a.get("project")
+        if proj and proj != SYSTEM_BUCKET and proj not in apps:
+            apps[proj] = _empty_app(proj, source=None, type_="project")
+    apps[SYSTEM_BUCKET] = _empty_app(SYSTEM_BUCKET, source=None, type_="system")
+
+    def _route(project_tag: str, compose_proj: Optional[str] = None) -> str:
+        """Decide app name from (project_tag, compose_project). Falls back to System."""
+        if compose_proj and compose_proj in apps and compose_proj != SYSTEM_BUCKET:
+            return compose_proj
+        if project_tag and project_tag in apps and project_tag != SYSTEM_BUCKET:
+            return project_tag
+        return SYSTEM_BUCKET
+
+    # ---- Pass 1: compose files --------------------------------------------
     for compose in by_cat.get("docker_compose", []):
         path = compose["metadata"]["file_path"]
-        name = Path(path).parent.name
-        app = apps.setdefault(name, _empty_app(name, source=path, type_="compose"))
-        app["compose_file"] = path
+        compose_dir = Path(path).parent.name
+        app_name = _route(compose["project"], compose_proj=compose_dir)
+        app = apps[app_name]
+        if app["compose_file"] is None:
+            app["compose_file"] = path
+        if path not in app["compose_files"]:
+            app["compose_files"].append(path)
 
-    # ---- Pass 2: seed from project-tagged systemd units --------------------
-    for unit in by_cat.get("systemd_service", []):
-        if unit["project"] != "System":
-            apps.setdefault(
-                unit["project"],
-                _empty_app(unit["project"], source=unit["name"], type_="systemd"),
-            )
-
-    # ---- Pass 3: seed from any other non-System project tag ----------------
-    for asset in assets:
-        if asset["project"] != "System" and asset["project"] not in apps:
-            apps[asset["project"]] = _empty_app(
-                asset["project"], source=None, type_="project_dir"
-            )
-
-    # ---- Pass 4: attach containers, build host-port → app index ------------
+    # ---- Pass 2: containers + host-port index -----------------------------
     host_port_to_app: Dict[int, str] = {}
-
-    def _resolve_container_app(c: Dict[str, Any]) -> str:
-        """Decide which app a container belongs to."""
-        meta = c["metadata"]
-        compose_proj = meta.get("compose_project")
-        if compose_proj:
-            if compose_proj not in apps:
-                apps[compose_proj] = _empty_app(
-                    compose_proj, source=None, type_="compose-implied"
-                )
-            return compose_proj
-        if c["project"] != "System":
-            return c["project"]  # already seeded in pass 3
-        # Standalone container — treat its own name as the app
-        if c["name"] not in apps:
-            apps[c["name"]] = _empty_app(
-                c["name"], source=c["name"], type_="standalone-container"
-            )
-        return c["name"]
+    container_to_app: Dict[str, str] = {}
 
     for c in by_cat.get("docker_container", []):
         meta = c["metadata"]
-        app_name = _resolve_container_app(c)
+        app_name = _route(c["project"], compose_proj=meta.get("compose_project"))
+        container_to_app[c["name"]] = app_name
         app = apps[app_name]
         app["containers"].append(c["name"])
 
-        # Port mappings (dedup IPv4 + IPv6 duplicates that point at the same host_port)
         seen_mappings = {
             (pm["host_port"], pm["container"], pm["container_port"])
             for pm in app["port_mappings"]
@@ -140,66 +156,63 @@ def correlate(
                     )
                     seen_mappings.add(key)
 
-        # Bind-mount sources count as storage paths the app owns/uses
         for src in meta.get("bind_mount_sources") or []:
             app["storage_paths"].append(src)
-
-        # Env keys union
         for k in meta.get("env_keys") or []:
             if k not in app["env_keys"]:
                 app["env_keys"].append(k)
 
-    # ---- Pass 4b: extend host_port_to_app from project-tagged listening ports
-    # This catches non-Docker apps (e.g. systemd-run binaries) so nginx blocks
-    # proxying to those ports still link back to the right application.
+    # Extend host_port index from project-tagged listening ports so nginx
+    # can link to non-Docker apps (e.g. an OCI_Dashboard service on :8080).
     for p in by_cat.get("network_port", []):
-        if p["project"] == "System" or p["project"] not in apps:
-            continue
-        port = p["metadata"].get("port")
-        if isinstance(port, int):
-            host_port_to_app.setdefault(port, p["project"])
+        if p["project"] != SYSTEM_BUCKET and p["project"] in apps:
+            port = p["metadata"].get("port")
+            if isinstance(port, int):
+                host_port_to_app.setdefault(port, p["project"])
 
-    # ---- Pass 5: attach docker volumes ------------------------------------
+    # ---- Pass 3: images attach to the apps whose containers use them ------
+    image_to_apps: Dict[str, Set[str]] = defaultdict(set)
+    for c in by_cat.get("docker_container", []):
+        img = c["metadata"].get("image")
+        if img:
+            image_to_apps[img].add(container_to_app[c["name"]])
+
+    for img in by_cat.get("docker_image", []):
+        candidates: Set[str] = set()
+        for tag in (img["metadata"].get("tags") or []) + [img["name"]]:
+            candidates |= image_to_apps.get(tag, set())
+        target_apps = candidates or {SYSTEM_BUCKET}
+        for app_name in target_apps:
+            if img["name"] not in apps[app_name]["images"]:
+                apps[app_name]["images"].append(img["name"])
+
+    # ---- Pass 4: volumes --------------------------------------------------
     for v in by_cat.get("docker_volume", []):
         meta = v["metadata"]
-        compose_proj = meta.get("compose_project")
-        app_name: Optional[str] = None
-        if compose_proj and compose_proj in apps:
-            app_name = compose_proj
-        elif v["project"] != "System" and v["project"] in apps:
-            app_name = v["project"]
-        if app_name:
-            apps[app_name]["volumes"].append(
-                {
-                    "name": v["name"],
-                    "mountpoint": meta.get("mountpoint"),
-                    "size_bytes": meta.get("size_bytes", 0),
-                }
-            )
+        app_name = _route(v["project"], compose_proj=meta.get("compose_project"))
+        apps[app_name]["volumes"].append(
+            {
+                "name": v["name"],
+                "mountpoint": meta.get("mountpoint"),
+                "size_bytes": meta.get("size_bytes", 0),
+            }
+        )
 
-    # ---- Pass 6: attach docker networks -----------------------------------
+    # ---- Pass 5: networks --------------------------------------------------
     for n in by_cat.get("docker_network", []):
         labels = n["metadata"].get("labels") or {}
         compose_proj = labels.get("com.docker.compose.project")
-        if compose_proj and compose_proj in apps:
-            apps[compose_proj]["networks"].append(n["name"])
-        elif n["project"] != "System" and n["project"] in apps:
-            apps[n["project"]]["networks"].append(n["name"])
+        app_name = _route(n["project"], compose_proj=compose_proj)
+        apps[app_name]["networks"].append(n["name"])
 
-    # ---- Pass 7: attach nginx server blocks (upstream → host_port → app) --
+    # ---- Pass 6: nginx blocks ---------------------------------------------
     for ng in by_cat.get("nginx_server_block", []):
         meta = ng["metadata"]
         upstream_port = meta.get("upstream_port")
-        app_name = None
-        # Strategy A: upstream port matches a container's host port
         if upstream_port and upstream_port in host_port_to_app:
             app_name = host_port_to_app[upstream_port]
-        # Strategy B: subdomain → project via existing DOMAIN_MAPPING
-        elif ng["project"] != "System" and ng["project"] in apps:
-            app_name = ng["project"]
-
-        if not app_name:
-            continue
+        else:
+            app_name = _route(ng["project"])
         app = apps[app_name]
         app["nginx_sites"].append(ng["name"])
         url = meta.get("url")
@@ -210,29 +223,35 @@ def correlate(
         if meta.get("cloudflare_origin"):
             app["cloudflare"] = True
 
-    # ---- Pass 8: attach systemd services and timers -----------------------
+    # ---- Pass 7: systemd services + timers --------------------------------
     for s in by_cat.get("systemd_service", []) + by_cat.get("systemd_timer", []):
-        if s["project"] != "System" and s["project"] in apps:
-            apps[s["project"]]["systemd_units"].append(s["name"])
-            for k in s["metadata"].get("environment_keys") or []:
-                if k not in apps[s["project"]]["env_keys"]:
-                    apps[s["project"]]["env_keys"].append(k)
+        app_name = _route(s["project"])
+        apps[app_name]["systemd_units"].append(s["name"])
+        for k in s["metadata"].get("environment_keys") or []:
+            if k not in apps[app_name]["env_keys"]:
+                apps[app_name]["env_keys"].append(k)
 
-    # ---- Pass 9: attach listening ports -----------------------------------
+    # ---- Pass 8: listening ports ------------------------------------------
     for p in by_cat.get("network_port", []):
         port = p["metadata"].get("port")
         if not isinstance(port, int):
             continue
         if port in host_port_to_app:
             app_name = host_port_to_app[port]
-            if port not in apps[app_name]["listening_ports"]:
-                apps[app_name]["listening_ports"].append(port)
-        elif p["project"] != "System" and p["project"] in apps:
-            if port not in apps[p["project"]]["listening_ports"]:
-                apps[p["project"]]["listening_ports"].append(port)
+        else:
+            app_name = _route(p["project"])
+        if port not in apps[app_name]["listening_ports"]:
+            apps[app_name]["listening_ports"].append(port)
 
-    # ---- Pass 10: attach project directory + size -------------------------
+    # ---- Pass 9: storage mounts -------------------------------------------
+    for m in by_cat.get("storage_mount", []):
+        app_name = _route(m["project"])
+        apps[app_name]["storage_mounts"].append(m["name"])
+
+    # ---- Pass 10: project_dir size for project apps -----------------------
     for app_name, app in apps.items():
+        if app["type"] != "project":
+            continue
         proj_dir = Path(projects_root) / app_name
         if proj_dir.is_dir():
             app["project_dir"] = str(proj_dir)
@@ -240,32 +259,32 @@ def correlate(
             if str(proj_dir) not in app["storage_paths"]:
                 app["storage_paths"].insert(0, str(proj_dir))
 
-    # ---- Pass 11: aggregate total disk + dedup lists ----------------------
+    # ---- Pass 11: totals + dedup -----------------------------------------
     for app in apps.values():
         total = app["project_dir_size_bytes"]
         for v in app["volumes"]:
             total += v.get("size_bytes") or 0
-        # Bind-mount sources that aren't under projects_root may add storage too
         for src in app["storage_paths"]:
             if not src.startswith(projects_root):
                 total += _dir_size_bytes(src)
         app["total_size_bytes"] = total
 
-        # Dedup the list fields that are simple strings
         for k in (
             "containers",
+            "images",
+            "compose_files",
             "nginx_sites",
             "urls",
             "systemd_units",
             "networks",
             "storage_paths",
+            "storage_mounts",
             "env_keys",
             "listening_ports",
         ):
             if isinstance(app.get(k), list):
                 app[k] = sorted(set(app[k]), key=str)
 
-        # components_count is a rough "how many moving parts" signal
         app["components_count"] = (
             len(app["containers"])
             + len(app["nginx_sites"])
@@ -273,7 +292,6 @@ def correlate(
             + len(app["volumes"])
         )
 
-    # Return as a list with stable ordering
     result = []
     for name in sorted(apps.keys()):
         app = apps[name]
