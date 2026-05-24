@@ -12,7 +12,7 @@ V6 is the rewrite of an earlier V5 that distributed scanning across multiple hos
 - **Correlates** the flat scan output into per-application documents (the heart of V6 — see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)).
 - **Exposes** the data through a FastAPI service (`/api/applications`, `/api/assets`, `/api/projects`, `/api/ports`, `/api/storage`, `/api/scans`, `/api/actions`).
 - **Acts on** containers / systemd units / nginx via `POST /api/assets/{id}/action` and `POST /api/applications/{name}/action` (start/stop/restart/logs/...), with a full audit log at `/api/actions/`.
-- **Visualizes** it through a React+Vite frontend with dark theme, filterable asset tables, and a scan trigger.
+- **Visualizes** it through a React+Vite SPA: Dashboard, Applications (list + rich detail), Projects, Ports registry (+ live probe), Storage (+ owner breakdown), Actions audit log, and a flat Asset browser.
 
 ## Quick start (local dev)
 
@@ -96,7 +96,8 @@ The suite is 118 tests covering scanner contracts, application correlation logic
 | 6 Nginx exposure | ✅ |
 | 7 Project/System linkage + Ports registry + Storage registry | ✅ |
 | 8 Operational controls | ✅ |
-| 9 UI polish + hardening | pending |
+| 9A Frontend extension (apps/ports/storage/actions UI) | ✅ |
+| 9B UI polish + frontend tests + hardening | pending |
 
 See [`docs/phases/`](docs/phases/) for the build journal — each phase has a status doc covering scope, decisions, bugs caught, and what landed.
 

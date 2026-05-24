@@ -2,11 +2,11 @@ import { useQuery } from "@tanstack/react-query";
 import { NavLink } from "react-router-dom";
 import { endpoints } from "../api/client";
 
-function NavItem({ to, children, count }) {
+function NavItem({ to, children, count, end = true }) {
   return (
     <NavLink
       to={to}
-      end
+      end={end}
       className={({ isActive }) =>
         `flex items-center justify-between px-3 py-1.5 rounded text-sm ${
           isActive
@@ -36,6 +36,18 @@ export default function Sidebar() {
     queryKey: ["categories"],
     queryFn: () => endpoints.assetCategories().then((r) => r.data.categories),
   });
+  const apps = useQuery({
+    queryKey: ["applications-count"],
+    queryFn: () => endpoints.listApplications().then((r) => r.data.count),
+  });
+  const ports = useQuery({
+    queryKey: ["ports-count"],
+    queryFn: () => endpoints.portsSummary().then((r) => r.data.total),
+  });
+  const storage = useQuery({
+    queryKey: ["storage-count"],
+    queryFn: () => endpoints.storageSummary().then((r) => r.data.total),
+  });
 
   const counts = Object.fromEntries(
     (categories.data || []).map((c) => [c.category, c.count])
@@ -46,12 +58,26 @@ export default function Sidebar() {
       <SectionLabel>Overview</SectionLabel>
       <div className="px-2 space-y-1">
         <NavItem to="/">Dashboard</NavItem>
-        <NavItem to="/projects">Projects</NavItem>
-        <NavItem to="/assets">All Assets</NavItem>
-        <NavItem to="/scans">Scans</NavItem>
       </div>
 
-      <SectionLabel>System Resources</SectionLabel>
+      <SectionLabel>Inventory</SectionLabel>
+      <div className="px-2 space-y-1">
+        <NavItem to="/applications" count={apps.data} end={false}>
+          Applications
+        </NavItem>
+        <NavItem to="/projects" end={false}>Projects</NavItem>
+        <NavItem to="/ports" count={ports.data}>Ports</NavItem>
+        <NavItem to="/storage" count={storage.data}>Storage</NavItem>
+        <NavItem to="/assets">All Assets</NavItem>
+      </div>
+
+      <SectionLabel>Activity</SectionLabel>
+      <div className="px-2 space-y-1">
+        <NavItem to="/scans">Scans</NavItem>
+        <NavItem to="/actions">Actions Log</NavItem>
+      </div>
+
+      <SectionLabel>By Category</SectionLabel>
       <div className="px-2 space-y-1">
         <NavItem
           to="/assets?category=docker_container"

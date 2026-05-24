@@ -53,7 +53,8 @@ Rewrite of V5 (which distributed scanning across multiple hosts and turned into 
 | 6 | Live on internet via nginx + Cloudflare + LE wildcard cert | ✅ |
 | 7 | Project/System ownership + Ports registry + Storage registry | ✅ |
 | 8 | Operational controls (start/stop/restart/logs + audit log) | ✅ |
-| 9 | UI polish, frontend tests, hardening | in progress |
+| 9A | Frontend extension: Applications/Ports/Storage/Actions pages + action buttons | ✅ |
+| 9B | UI polish, frontend tests, hardening | pending |
 
 ## Data model — the 30-second mental model
 
@@ -135,7 +136,17 @@ Visual language (don't break this when adding pages):
 - Stat values: `text-2xl font-semibold`.
 - Active nav: `bg-accent/20 text-accent`.
 
-Existing pages: Dashboard, Projects, ProjectDetail, Assets, Scans.
+Pages (Phase 4 + 9A):
+- Dashboard (`/`) — hero cards + applications list + recent actions feed + categories strip
+- Applications (`/applications`, `/applications/:name`) — card grid + rich detail with action buttons
+- Projects (`/projects`, `/projects/:name`) — simpler legacy view from /api/projects
+- Ports (`/ports`) — registry table + filters + live `ss` probe widget
+- Storage (`/storage`) — by-owner bar chart + kind tabs + table with mount usage bars
+- Actions (`/actions`) — audit log with expandable rows showing stdout/stderr
+- Assets (`/assets`) — flat list with category/project/status filters
+- Scans (`/scans`) — history table + trigger button
+
+Shared components: `AppCard`, `ActionButton` (with confirm + output modal), `StatePill`, `UsageBar`, `Bytes/formatBytes`.
 
 axios client at `frontend/src/api/client.js`:
 - Reads creds from `localStorage` (`ifd_user`, `ifd_pass`).
@@ -201,3 +212,5 @@ sudo systemctl restart infradocs-v6-api.service
 2. `docs/phases/PHASE_8_STATUS.md` — action dispatcher + audit log + endpoints
 3. Frontend `client.js` — removed hardcoded `msinha123` fallback
 4. Test files — `AUTH = _resolve_auth()` pattern (so env-set password doesn't break the suite)
+5. `docs/phases/PHASE_9A_FRONTEND_STATUS.md` — five new pages, action buttons, dashboard refresh
+6. `frontend/vite.config.js` — `build.assetsDir = "static"` (fixed `/assets` route 301 caused by dist/assets/ shadowing the SPA route — present since Phase 6)

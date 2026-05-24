@@ -52,14 +52,47 @@ api.interceptors.response.use(
 export const endpoints = {
   health: () => api.get("/api/health"),
 
+  // assets (Phase 3)
   listAssets: (params = {}) => api.get("/api/assets/", { params }),
   assetCategories: () => api.get("/api/assets/categories"),
   getAsset: (id) => api.get(`/api/assets/${encodeURIComponent(id)}`),
 
+  // projects (Phase 3)
   listProjects: () => api.get("/api/projects/list"),
   getProject: (name) => api.get(`/api/projects/${encodeURIComponent(name)}`),
 
+  // applications (Phase 5+ correlated docs)
+  listApplications: (params = {}) =>
+    api.get("/api/applications/list", { params }),
+  getApplication: (name) =>
+    api.get(`/api/applications/${encodeURIComponent(name)}`),
+
+  // ports registry (Phase 7B)
+  listPorts: (params = {}) => api.get("/api/ports/", { params }),
+  portsSummary: () => api.get("/api/ports/summary"),
+  probePorts: (range, proto = "tcp") =>
+    api.get("/api/ports/probe", { params: { range, proto } }),
+
+  // storage registry (Phase 7C)
+  listStorage: (params = {}) => api.get("/api/storage/", { params }),
+  storageSummary: () => api.get("/api/storage/summary"),
+
+  // scans (Phase 3)
   listScans: (limit = 25) => api.get("/api/scans/", { params: { limit } }),
   getScan: (id) => api.get(`/api/scans/${id}`),
   triggerScan: () => api.post("/api/scans/trigger"),
+
+  // actions (Phase 8)
+  allowedActions: () => api.get("/api/actions/allowed"),
+  listActions: (params = {}) => api.get("/api/actions/", { params }),
+  fireAssetAction: (assetId, action, args = {}) =>
+    api.post(`/api/assets/${encodeURIComponent(assetId)}/action`, {
+      action,
+      args,
+    }),
+  fireApplicationAction: (name, action, args = {}) =>
+    api.post(`/api/applications/${encodeURIComponent(name)}/action`, {
+      action,
+      args,
+    }),
 };
