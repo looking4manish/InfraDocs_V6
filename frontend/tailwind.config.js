@@ -4,16 +4,18 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Vercel/Geist-style monochrome (zinc). Colour is reserved for status only.
+        // Dark + dense, EaseOut-style. Elevated neutral surfaces; one violet accent.
         bg: {
-          base: "#09090b",
-          panel: "#0e0e11",
-          card: "#161619",
-          hover: "#27272a",
+          base: "#0a0a0c",
+          panel: "#0f0f12",
+          card: "#16161a",
+          elev: "#1c1c21",
+          hover: "#26262b",
         },
         accent: {
-          DEFAULT: "#fafafa",
-          dim: "#d4d4d8",
+          DEFAULT: "#8b5cf6",
+          dim: "#7c3aed",
+          soft: "#a78bfa",
         },
       },
       fontFamily: {

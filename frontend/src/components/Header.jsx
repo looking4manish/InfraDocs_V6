@@ -15,7 +15,7 @@ export default function Header() {
   return (
     <header className="h-14 shrink-0 flex items-center gap-4 px-4 border-b border-bg-hover bg-bg-panel">
       <div className="flex items-baseline gap-1.5 select-none">
-        <span className="text-[15px] font-semibold tracking-tight text-zinc-100">
+        <span className="text-[15px] font-semibold tracking-tight text-zinc-50">
           InfraDocs
         </span>
         <span className="text-[11px] text-zinc-500 font-mono">v6</span>
@@ -25,7 +25,7 @@ export default function Header() {
         <input
           type="search"
           placeholder="Search assets, projects, ports…"
-          className="w-full bg-bg-card border border-bg-hover rounded-md pl-3 pr-12 py-1.5 text-sm text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-zinc-500 transition"
+          className="w-full bg-bg-card border border-bg-hover rounded-md pl-3 pr-12 py-1.5 text-sm text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-accent/60 transition"
         />
         <kbd className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-zinc-500 border border-bg-hover rounded px-1.5 py-0.5 font-mono">
           ⌘K
@@ -35,7 +35,7 @@ export default function Header() {
       <button
         onClick={() => triggerScan.mutate()}
         disabled={triggerScan.isPending}
-        className="ml-auto inline-flex items-center gap-1.5 bg-accent hover:bg-accent-dim text-black text-sm font-medium px-3 py-1.5 rounded-md disabled:opacity-50 transition"
+        className="ml-auto inline-flex items-center gap-1.5 bg-accent hover:bg-accent-dim text-white text-sm font-medium px-3 py-1.5 rounded-md disabled:opacity-50 transition"
       >
         <RefreshCw size={14} className={cn(triggerScan.isPending && "animate-spin")} />
         {triggerScan.isPending ? "Scanning…" : "Scan now"}
