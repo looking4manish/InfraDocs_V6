@@ -6,7 +6,7 @@ import Dashboard from "./pages/Dashboard";
 import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
 import Applications from "./pages/Applications";
-import ApplicationDetail from "./pages/ApplicationDetail";
+import ApplicationPanel from "./pages/ApplicationPanel";
 import Assets from "./pages/Assets";
 import Ports from "./pages/Ports";
 import Storage from "./pages/Storage";
@@ -45,8 +45,9 @@ export default function App() {
       <Routes>
         <Route element={<AppShell />}>
           <Route path="/" element={<Dashboard />} />
-          <Route path="/applications" element={<Applications />} />
-          <Route path="/applications/:name" element={<ApplicationDetail />} />
+          <Route path="/applications" element={<Applications />}>
+            <Route path=":name" element={<ApplicationPanel />} />
+          </Route>
           <Route path="/projects" element={<Projects />} />
           <Route path="/projects/:name" element={<ProjectDetail />} />
           <Route path="/assets" element={<Assets />} />
