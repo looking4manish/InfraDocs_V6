@@ -4,13 +4,13 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Dark + dense, EaseOut-style. Elevated neutral surfaces; one violet accent.
+        // Pure-black canvas with an elevated neutral surface ladder; one violet accent.
         bg: {
-          base: "#0a0a0c",
-          panel: "#0f0f12",
-          card: "#16161a",
-          elev: "#1c1c21",
-          hover: "#26262b",
+          base: "#000000",
+          panel: "#0a0a0c",
+          card: "#121214",
+          elev: "#19191d",
+          hover: "#242429",
         },
         accent: {
           DEFAULT: "#8b5cf6",
