@@ -4,17 +4,21 @@ export default {
   theme: {
     extend: {
       colors: {
-        // V5-style dark palette
+        // Vercel/Geist-style monochrome (zinc). Colour is reserved for status only.
         bg: {
-          base: "#0b1220",
-          panel: "#111a2e",
-          card: "#16213e",
-          hover: "#1c2a4a",
+          base: "#09090b",
+          panel: "#0e0e11",
+          card: "#161619",
+          hover: "#27272a",
         },
         accent: {
-          DEFAULT: "#3b82f6",
-          dim: "#1e40af",
+          DEFAULT: "#fafafa",
+          dim: "#d4d4d8",
         },
+      },
+      fontFamily: {
+        sans: ["Geist", "Inter", "ui-sans-serif", "system-ui", "-apple-system", "sans-serif"],
+        mono: ['"Geist Mono"', "ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
       },
     },
   },
