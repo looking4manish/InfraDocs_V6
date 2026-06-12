@@ -70,9 +70,10 @@ def test_storage_mount_has_no_actions():
 
 def test_allowed_actions_is_complete():
     """Snapshot test so adding new actions is intentional."""
-    assert ALLOWED_ACTIONS["docker_container"] == {"start", "stop", "restart", "logs"}
-    assert ALLOWED_ACTIONS["systemd_service"] == {"start", "stop", "restart", "logs", "status"}
+    assert ALLOWED_ACTIONS["docker_container"] == {"start", "stop", "restart", "logs", "inspect", "stats"}
+    assert ALLOWED_ACTIONS["systemd_service"] == {"start", "stop", "restart", "logs", "status", "enable", "disable"}
     assert ALLOWED_ACTIONS["nginx_server_block"] == {"test", "reload"}
+    assert ALLOWED_ACTIONS["docker_image"] == {"pull"}
 
 
 # ----------------------- self-protection ------------------------------------
@@ -224,3 +225,66 @@ def test_dispatcher_records_duration_when_handler_doesnt():
 
     # Handler returns ActionResult with duration_ms=0; dispatcher fills it in.
     assert result.duration_ms >= 0  # Could be 0 if very fast, but field is set
+
+
+# ----------------------- Wave A actions (Phase 3.5.2) -----------------------
+
+
+def test_docker_container_inspect_returns_attrs():
+    container = MagicMock()
+    container.name = "openwebui"
+    container.attrs = {"State": {"Status": "running"}, "Id": "abc"}
+    client = MagicMock()
+    client.containers.get.return_value = container
+    with patch("app.actions._docker_client", return_value=client):
+        result = dispatch(_container_asset(), "inspect")
+    assert result.status == "success"
+    assert "State" in result.stdout
+    assert result.details["state"]["Status"] == "running"
+
+
+def test_docker_container_stats_returns_snapshot():
+    container = MagicMock()
+    container.name = "openwebui"
+    container.stats.return_value = {"read": "2026-06-12T00:00:00Z", "cpu_stats": {}}
+    client = MagicMock()
+    client.containers.get.return_value = container
+    with patch("app.actions._docker_client", return_value=client):
+        result = dispatch(_container_asset(), "stats")
+    container.stats.assert_called_once_with(stream=False)
+    assert result.status == "success"
+
+
+def test_systemd_enable_invokes_sudo_systemctl():
+    with patch("app.actions._run_subprocess") as run:
+        run.return_value = ActionResult(status="success", return_code=0)
+        dispatch(_systemd_asset(name="myapp.service"), "enable")
+    cmd = run.call_args.args[0]
+    assert cmd == ["sudo", "-n", "systemctl", "enable", "myapp.service"]
+
+
+def test_systemd_disable_is_self_protected():
+    asset = _systemd_asset(name="infradocs-v6-agent.timer", category="systemd_timer")
+    with pytest.raises(SelfActionRefused):
+        dispatch(asset, "disable")
+
+
+def test_docker_image_pull_calls_sdk():
+    client = MagicMock()
+    with patch("app.actions._docker_client", return_value=client):
+        asset = {
+            "category": "docker_image",
+            "name": "ghcr.io/open-webui/open-webui:latest",
+            "asset_id": "oci:image:1",
+            "metadata": {"tags": ["ghcr.io/open-webui/open-webui:latest"]},
+        }
+        result = dispatch(asset, "pull")
+    client.images.pull.assert_called_once_with("ghcr.io/open-webui/open-webui:latest")
+    assert result.status == "success"
+
+
+def test_docker_container_self_protect_now_enforced():
+    """Centralized guard: an infradocs-v6-* CONTAINER is now refused too."""
+    asset = _container_asset(name="infradocs-v6-api")
+    with pytest.raises(SelfActionRefused):
+        dispatch(asset, "restart")

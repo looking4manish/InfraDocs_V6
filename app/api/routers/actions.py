@@ -190,8 +190,9 @@ def list_actions(
 @router.get("/actions/allowed")
 def list_allowed(_: str = Depends(verify_auth)):
     """Return the per-category action allow-list for UI to drive button state."""
-    from app.actions import ALLOWED_ACTIONS
+    from app.actions import ALLOWED_ACTIONS, DESTRUCTIVE_ACTIONS
 
     return {
         "allowed": {k: sorted(v) for k, v in ALLOWED_ACTIONS.items()},
+        "destructive": {k: sorted(v) for k, v in DESTRUCTIVE_ACTIONS.items()},
     }

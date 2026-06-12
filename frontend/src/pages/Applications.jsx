@@ -1,30 +1,14 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useOutlet, useNavigate, useLocation } from "react-router-dom";
-import { AnimatePresence, motion } from "motion/react";
 import { endpoints } from "../api/client";
 import { cn } from "../lib/cn";
 import AppRow from "../components/AppRow";
+import { useLocation } from "react-router-dom";
 
 export default function Applications() {
   const [filter, setFilter] = useState("all");
-  const outlet = useOutlet();
-  const navigate = useNavigate();
   const location = useLocation();
-  const isOpen = Boolean(outlet);
-  const selected = isOpen
-    ? decodeURIComponent(location.pathname.replace(/^\/applications\/?/, ""))
-    : null;
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKey = (e) => {
-      if (e.key === "Escape") navigate("/applications");
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [isOpen, navigate]);
-
+  const selected = decodeURIComponent(location.pathname.replace(/^\/applications\/?/, "")) || null;
   const q = useQuery({
     queryKey: ["applications"],
     queryFn: () => endpoints.listApplications().then((r) => r.data),
@@ -109,31 +93,6 @@ export default function Applications() {
         )}
       </div>
 
-      <AnimatePresence>
-        {isOpen && (
-          <motion.div
-            key="app-panel-backdrop"
-            className="fixed inset-0 z-40 bg-black/60"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            onClick={() => navigate("/applications")}
-          />
-        )}
-        {isOpen && (
-          <motion.aside
-            key="app-panel-drawer"
-            className="fixed right-0 top-0 bottom-0 z-50 w-full max-w-2xl bg-bg-panel border-l border-bg-hover shadow-2xl"
-            initial={{ x: "100%" }}
-            animate={{ x: 0 }}
-            exit={{ x: "100%" }}
-            transition={{ type: "tween", ease: "easeOut", duration: 0.28 }}
-          >
-            {outlet}
-          </motion.aside>
-        )}
-      </AnimatePresence>
     </>
   );
 }

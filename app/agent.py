@@ -14,6 +14,7 @@ from typing import Any, Dict, List
 from app.core.config_loader import load_config
 from app.core.db_manager import DBManager
 from app.core.logger import get_scan_logger, setup_logger
+import uuid
 from app.core.project_detector import ProjectDetector
 from app.correlator import SYSTEM_BUCKET, correlate
 from app.ports_registry import build_ports_registry
@@ -145,6 +146,9 @@ def run_scan(args):
 
     db.insert_scan_log(
         {
+            "scan_id": uuid.uuid4().hex,
+            "started_at": start,
+            "finished_at": datetime.now(timezone.utc),
             "scan_type": "incremental" if args.incremental else "full",
             "duration_seconds": duration,
             "total_assets": len(all_assets),

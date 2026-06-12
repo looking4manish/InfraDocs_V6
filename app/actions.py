@@ -29,12 +29,51 @@ from docker.errors import APIError, DockerException, NotFound
 
 # ----------------------- allow-list per category ----------------------------
 
+# Card & Action Registry (Phase 3.5) — single source of truth for what each
+# category permits. `allowed` = every fireable action; `destructive` = subset
+# that needs a confirm gate; `self_protect` = enforce infradocs-v6-* refusal.
+# ALLOWED_ACTIONS is derived below so existing consumers keep working unchanged.
+ACTION_REGISTRY: Dict[str, Dict[str, Any]] = {
+    "docker_container": {
+        "allowed": {"start", "stop", "restart", "logs", "inspect", "stats"},
+        "destructive": {"stop", "restart"},
+        "self_protect": True,
+    },
+    "docker_compose": {
+        "allowed": {"up", "down", "restart"},
+        "destructive": {"down", "restart"},
+        "self_protect": True,
+    },
+    "systemd_service": {
+        "allowed": {"start", "stop", "restart", "logs", "status", "enable", "disable"},
+        "destructive": {"stop", "restart", "disable"},
+        "self_protect": True,
+    },
+    "systemd_timer": {
+        "allowed": {"start", "stop", "restart", "status", "enable", "disable"},
+        "destructive": {"stop", "restart", "disable"},
+        "self_protect": True,
+    },
+    "nginx_server_block": {
+        "allowed": {"test", "reload"},
+        "destructive": {"reload"},
+        "self_protect": False,
+    },
+    "docker_image": {
+        "allowed": {"pull"},
+        "destructive": set(),
+        "self_protect": False,
+    },
+}
+
+# Derived view — preserves the original API/dispatch consumers verbatim.
 ALLOWED_ACTIONS: Dict[str, set] = {
-    "docker_container": {"start", "stop", "restart", "logs"},
-    "docker_compose": {"up", "down", "restart"},
-    "systemd_service": {"start", "stop", "restart", "logs", "status"},
-    "systemd_timer": {"start", "stop", "restart", "status"},
-    "nginx_server_block": {"test", "reload"},
+    cat: set(spec["allowed"]) for cat, spec in ACTION_REGISTRY.items()
+}
+
+# Destructive map (used by /api/actions/allowed additively, and by the UI).
+DESTRUCTIVE_ACTIONS: Dict[str, set] = {
+    cat: set(spec.get("destructive", set())) for cat, spec in ACTION_REGISTRY.items()
 }
 
 # Refuse to act on these — would kill the API mid-request.
@@ -102,6 +141,22 @@ def _act_docker_container(
             stdout=raw,
             details={"tail": tail, "lines": raw.count("\n")},
         )
+    if action == "inspect":
+        attrs = container.attrs
+        import json as _json
+        return ActionResult(
+            status="success",
+            stdout=_json.dumps(attrs, indent=2, default=str),
+            details={"state": attrs.get("State", {})},
+        )
+    if action == "stats":
+        st = container.stats(stream=False)
+        import json as _json
+        return ActionResult(
+            status="success",
+            stdout=_json.dumps(st, indent=2, default=str),
+            details={"read": st.get("read")},
+        )
     raise ActionNotAllowed(action)
 
 
@@ -134,7 +189,7 @@ def _act_systemd(
     if any(name.startswith(p) for p in SELF_PROTECT_PREFIXES):
         raise SelfActionRefused(f"refusing to act on protected unit: {name}")
 
-    if action in ("start", "stop", "restart"):
+    if action in ("start", "stop", "restart", "enable", "disable"):
         cmd = ["sudo", "-n", "systemctl", action, name]
         return _run_subprocess(cmd, timeout=30)
     if action == "status":
@@ -168,6 +223,25 @@ def _act_nginx(
         return _run_subprocess(
             ["sudo", "-n", "nginx", "-s", "reload"], timeout=10
         )
+    raise ActionNotAllowed(action)
+
+
+# ----------------------- docker image actions -------------------------------
+
+
+def _act_docker_image(
+    asset: Dict[str, Any], action: str, args: Dict[str, Any]
+) -> ActionResult:
+    client = _docker_client()
+    if action == "pull":
+        ref = (asset.get("metadata", {}).get("tags") or [asset.get("name")])[0]
+        if not ref:
+            raise ActionError("image reference missing")
+        try:
+            client.images.pull(ref)
+        except (APIError, DockerException) as e:
+            raise ActionError(f"pull failed: {e}")
+        return ActionResult(status="success", stdout=f"pulled {ref}")
     raise ActionNotAllowed(action)
 
 
@@ -214,6 +288,7 @@ _DISPATCH = {
     "systemd_service": _act_systemd,
     "systemd_timer": _act_systemd,
     "nginx_server_block": _act_nginx,
+    "docker_image": _act_docker_image,
 }
 
 
@@ -227,6 +302,14 @@ def dispatch(
         raise ActionNotAllowed(
             f"category '{category}' has no operational actions"
         )
+    # Centralized self-protect: refuse infradocs-v6-* for every category,
+    # not just systemd, so the API can never act on itself mid-request.
+    if ACTION_REGISTRY.get(category, {}).get("self_protect"):
+        _nm = asset.get("name", "")
+        if any(_nm.startswith(_p) for _p in SELF_PROTECT_PREFIXES):
+            raise SelfActionRefused(
+                f"refusing to act on protected asset: {_nm}"
+            )
     if action not in ALLOWED_ACTIONS.get(category, set()):
         raise ActionNotAllowed(
             f"action '{action}' not allowed for category '{category}' "

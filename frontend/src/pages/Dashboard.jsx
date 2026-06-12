@@ -29,16 +29,16 @@ import { cn } from "../lib/cn";
 // Mockup palette (violet primary, then teal/amber/blue/coral), extended for
 // charts with many slices/bars. Status colours stay reserved for StatePill.
 const PALETTE = [
-  "#7F77DD",
-  "#1D9E75",
-  "#EF9F27",
-  "#378ADD",
-  "#D85A30",
-  "#a78bfa",
-  "#22d3ee",
-  "#f472b6",
-  "#84cc16",
-  "#fb7185",
+  "#7c6ee6",
+  "#3aa389",
+  "#c79a4b",
+  "#5b8fd0",
+  "#c4684d",
+  "#9d8df1",
+  "#4fb8ab",
+  "#c97fa6",
+  "#8fae5a",
+  "#c98262",
 ];
 
 function relTime(ts) {

@@ -35,3 +35,11 @@ config.local.yml
 # Build artifacts
 build/
 dist/
+# V7 working noise — never commit
+*.bak.v6
+*.bak.v7
+*.bak.v7b
+*.bak.v7c
+*.bak.v7-*
+frontend/dist.bak.*/
+frontend/dist/

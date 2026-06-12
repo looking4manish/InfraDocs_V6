@@ -12,6 +12,16 @@ buckets; nothing is silently dropped. The `System` app is therefore the
 catch-all that surfaces docker images, host-level mounts, host-level
 listening ports, and any container/service that doesn't live in a project
 directory.
+
+**V7 additions (Phase 1, additive):**
+  - `links[]` — every pass records *why* it joined an asset to an app:
+    {src_kind, src, dst_kind, dst, via, pass}. Evidence, not inference.
+  - `containers_detail[]` / `nginx_detail[]` — denormalized component
+    state so the UI renders topology from a single application fetch.
+  - `hygiene{}` — dangling/unused images, orphaned volumes,
+    exited-with-restart=always containers.
+  - `resilience{}` — would this app survive a reboot?
+All existing fields and their shapes are unchanged.
 """
 
 from __future__ import annotations
@@ -55,6 +65,19 @@ def _empty_app(name: str, *, source: Optional[str], type_: str) -> Dict[str, Any
         "cloudflare": False,
         "env_keys": [],
         "components_count": 0,
+        "links": [],
+        "containers_detail": [],
+        "nginx_detail": [],
+        "hygiene": {
+            "exited_restart_always": [],
+            "dangling_images": [],
+            "unused_images": [],
+            "orphaned_volumes": [],
+        },
+        "resilience": {
+            "reboot_safe": True,
+            "issues": [],
+        },
     }
 
 
@@ -76,6 +99,45 @@ def _project_dirs(projects_root: str) -> Set[str]:
     }
 
 
+def _link(
+    app: Dict[str, Any],
+    src_kind: str,
+    src: str,
+    dst_kind: str,
+    dst: str,
+    via: str,
+    pass_no: int,
+) -> None:
+    """Record linking evidence on the app document.
+
+    Convention: links to the System bucket are NOT recorded — System is the
+    absence of evidence, and an app-level `links == []` with assets present
+    is itself the signal the UI surfaces ("no linking evidence found").
+    Container→port links are the exception kind whose dst is not an app.
+    """
+    if dst_kind == "application" and dst == SYSTEM_BUCKET:
+        return
+    app["links"].append(
+        {
+            "src_kind": src_kind,
+            "src": src,
+            "dst_kind": dst_kind,
+            "dst": dst,
+            "via": via,
+            "pass": pass_no,
+        }
+    )
+
+
+def _restart_policy_name(rp: Any) -> Optional[str]:
+    """Scanner may emit the policy as a string or a docker {"Name": ...} dict."""
+    if isinstance(rp, dict):
+        return rp.get("Name") or None
+    if isinstance(rp, str):
+        return rp or None
+    return None
+
+
 def correlate(
     assets: List[Dict[str, Any]],
     *,
@@ -86,7 +148,6 @@ def correlate(
     by_cat = _group(assets)
     apps: Dict[str, Dict[str, Any]] = {}
 
-    # ---- Pre-seed: project buckets + System -------------------------------
     project_names = _project_dirs(projects_root)
     for pname in project_names:
         apps[pname] = _empty_app(
@@ -94,9 +155,6 @@ def correlate(
             source=str(Path(projects_root) / pname),
             type_="project",
         )
-    # Also seed any project tag we see in scan output even if the dir is gone
-    # (or in tests where projects_root is a tmp_path). Keeps the invariant
-    # "every project-tagged asset has an app to land in".
     for a in assets:
         proj = a.get("project")
         if proj and proj != SYSTEM_BUCKET and proj not in apps:
@@ -121,6 +179,10 @@ def correlate(
             app["compose_file"] = path
         if path not in app["compose_files"]:
             app["compose_files"].append(path)
+        _link(
+            app, "docker_compose", path, "application", app_name,
+            "compose_dir" if app_name == compose_dir else "project_tag", 1,
+        )
 
     # ---- Pass 2: containers + host-port index -----------------------------
     host_port_to_app: Dict[int, str] = {}
@@ -128,10 +190,37 @@ def correlate(
 
     for c in by_cat.get("docker_container", []):
         meta = c["metadata"]
-        app_name = _route(c["project"], compose_proj=meta.get("compose_project"))
+        compose_proj = meta.get("compose_project")
+        app_name = _route(c["project"], compose_proj=compose_proj)
         container_to_app[c["name"]] = app_name
         app = apps[app_name]
         app["containers"].append(c["name"])
+
+        if compose_proj and app_name == compose_proj:
+            via = "compose_label"
+        else:
+            via = "project_dir"
+        _link(app, "docker_container", c["name"], "application", app_name, via, 2)
+
+        rp_name = _restart_policy_name(meta.get("restart_policy"))
+        app["containers_detail"].append(
+            {
+                "name": c["name"],
+                "image": meta.get("image"),
+                "running": bool(meta.get("running")),
+                "restarts": meta.get("restarts", 0),
+                "restart_policy": rp_name,
+                "has_health_check": bool(
+                    meta.get("has_health_check") or meta.get("healthcheck_defined")
+                ),
+                "started_at": meta.get("started_at"),
+                "host_ports": meta.get("host_ports") or [],
+                "compose_service": meta.get("compose_service"),
+            }
+        )
+
+        if not meta.get("running") and rp_name in ("always", "unless-stopped"):
+            app["hygiene"]["exited_restart_always"].append(c["name"])
 
         seen_mappings = {
             (pm["host_port"], pm["container"], pm["container_port"])
@@ -155,6 +244,10 @@ def correlate(
                         }
                     )
                     seen_mappings.add(key)
+                _link(
+                    app, "docker_container", c["name"],
+                    "network_port", str(hp_int), "port_mapping", 2,
+                )
 
         for src in meta.get("bind_mount_sources") or []:
             app["storage_paths"].append(src)
@@ -185,11 +278,24 @@ def correlate(
         for app_name in target_apps:
             if img["name"] not in apps[app_name]["images"]:
                 apps[app_name]["images"].append(img["name"])
+            if candidates:
+                _link(
+                    apps[app_name], "docker_image", img["name"],
+                    "application", app_name, "image_tag", 3,
+                )
+
+        meta = img["metadata"]
+        owner = sorted(target_apps)[0]
+        if meta.get("is_dangling"):
+            apps[owner]["hygiene"]["dangling_images"].append(img["name"])
+        elif meta.get("in_use") is False:
+            apps[owner]["hygiene"]["unused_images"].append(img["name"])
 
     # ---- Pass 4: volumes --------------------------------------------------
     for v in by_cat.get("docker_volume", []):
         meta = v["metadata"]
-        app_name = _route(v["project"], compose_proj=meta.get("compose_project"))
+        compose_proj = meta.get("compose_project")
+        app_name = _route(v["project"], compose_proj=compose_proj)
         apps[app_name]["volumes"].append(
             {
                 "name": v["name"],
@@ -197,6 +303,13 @@ def correlate(
                 "size_bytes": meta.get("size_bytes", 0),
             }
         )
+        _link(
+            apps[app_name], "docker_volume", v["name"], "application", app_name,
+            "compose_label" if compose_proj and app_name == compose_proj
+            else "project_tag", 4,
+        )
+        if (v.get("health_indicators") or {}).get("in_use") is False:
+            apps[app_name]["hygiene"]["orphaned_volumes"].append(v["name"])
 
     # ---- Pass 5: networks --------------------------------------------------
     for n in by_cat.get("docker_network", []):
@@ -204,6 +317,11 @@ def correlate(
         compose_proj = labels.get("com.docker.compose.project")
         app_name = _route(n["project"], compose_proj=compose_proj)
         apps[app_name]["networks"].append(n["name"])
+        _link(
+            apps[app_name], "docker_network", n["name"], "application", app_name,
+            "compose_label" if compose_proj and app_name == compose_proj
+            else "project_tag", 5,
+        )
 
     # ---- Pass 6: nginx blocks ---------------------------------------------
     for ng in by_cat.get("nginx_server_block", []):
@@ -211,10 +329,28 @@ def correlate(
         upstream_port = meta.get("upstream_port")
         if upstream_port and upstream_port in host_port_to_app:
             app_name = host_port_to_app[upstream_port]
+            via = f"upstream_port:{upstream_port}"
         else:
             app_name = _route(ng["project"])
+            via = "project_tag"
         app = apps[app_name]
         app["nginx_sites"].append(ng["name"])
+        _link(app, "nginx_server_block", ng["name"], "application", app_name, via, 6)
+        app["nginx_detail"].append(
+            {
+                "server_name": ng["name"],
+                "config_file": meta.get("config_file"),
+                "listen_ports": meta.get("listen_ports") or [],
+                "upstream_host": meta.get("upstream_host"),
+                "upstream_port": upstream_port,
+                "has_ssl": bool(meta.get("has_ssl")),
+                "ssl_issuer": meta.get("ssl_issuer"),
+                "ssl_not_after": meta.get("ssl_not_after"),
+                "cloudflare_origin": bool(meta.get("cloudflare_origin")),
+                "internet_exposed": bool(meta.get("internet_exposed")),
+                "url": meta.get("url"),
+            }
+        )
         url = meta.get("url")
         if url and url not in app["urls"]:
             app["urls"].append(url)
@@ -227,6 +363,19 @@ def correlate(
     for s in by_cat.get("systemd_service", []) + by_cat.get("systemd_timer", []):
         app_name = _route(s["project"])
         apps[app_name]["systemd_units"].append(s["name"])
+        _link(
+            apps[app_name], s["category"], s["name"],
+            "application", app_name, "unit_path", 7,
+        )
+        unit_state = s["metadata"].get("unit_file_state")
+        if (
+            app_name != SYSTEM_BUCKET
+            and unit_state
+            and unit_state not in ("enabled", "enabled-runtime", "static")
+        ):
+            apps[app_name]["resilience"]["issues"].append(
+                f"unit {s['name']} is {unit_state} (won't start on boot)"
+            )
         for k in s["metadata"].get("environment_keys") or []:
             if k not in apps[app_name]["env_keys"]:
                 apps[app_name]["env_keys"].append(k)
@@ -238,15 +387,25 @@ def correlate(
             continue
         if port in host_port_to_app:
             app_name = host_port_to_app[port]
+            via = "host_port_index"
         else:
             app_name = _route(p["project"])
+            via = "process_cwd"
         if port not in apps[app_name]["listening_ports"]:
             apps[app_name]["listening_ports"].append(port)
+        _link(
+            apps[app_name], "network_port", str(port),
+            "application", app_name, via, 8,
+        )
 
     # ---- Pass 9: storage mounts -------------------------------------------
     for m in by_cat.get("storage_mount", []):
         app_name = _route(m["project"])
         apps[app_name]["storage_mounts"].append(m["name"])
+        _link(
+            apps[app_name], "storage_mount", m["name"],
+            "application", app_name, "project_tag", 9,
+        )
 
     # ---- Pass 10: project_dir size for project apps -----------------------
     for app_name, app in apps.items():
@@ -259,7 +418,7 @@ def correlate(
             if str(proj_dir) not in app["storage_paths"]:
                 app["storage_paths"].insert(0, str(proj_dir))
 
-    # ---- Pass 11: totals + dedup -----------------------------------------
+    # ---- Pass 11: totals + dedup + resilience ------------------------------
     for app in apps.values():
         total = app["project_dir_size_bytes"]
         for v in app["volumes"]:
@@ -284,6 +443,23 @@ def correlate(
         ):
             if isinstance(app.get(k), list):
                 app[k] = sorted(set(app[k]), key=str)
+
+        seen_links: Set[tuple] = set()
+        deduped: List[Dict[str, Any]] = []
+        for ln in app["links"]:
+            key = (ln["src_kind"], ln["src"], ln["dst_kind"], ln["dst"], ln["via"])
+            if key not in seen_links:
+                seen_links.add(key)
+                deduped.append(ln)
+        app["links"] = deduped
+
+        if app["type"] == "project":
+            for cd in app["containers_detail"]:
+                if cd["restart_policy"] in (None, "no"):
+                    app["resilience"]["issues"].append(
+                        f"container {cd['name']} has no restart policy"
+                    )
+        app["resilience"]["reboot_safe"] = not app["resilience"]["issues"]
 
         app["components_count"] = (
             len(app["containers"])

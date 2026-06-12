@@ -1,41 +1,130 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { RefreshCw } from "lucide-react";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { RefreshCw, Search, TriangleAlert, CircleAlert } from "lucide-react";
 import { endpoints } from "../api/client";
 import { cn } from "../lib/cn";
+import {
+  computeAttention, freshness, normalizeList, parseScanTime,
+} from "../lib/attention";
+import { useDrawer } from "./DrawerProvider";
+
+function openPalette() {
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
+}
 
 export default function Header() {
   const qc = useQueryClient();
+  const { openDrawer } = useDrawer();
+  const [showAttn, setShowAttn] = useState(false);
+
   const triggerScan = useMutation({
     mutationFn: () => endpoints.triggerScan(),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["scans"] });
-    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["scans"] }),
   });
 
+  const scans = useQuery({
+    queryKey: ["scans", "latest"],
+    queryFn: () => endpoints.listScans(1).then((r) => r.data),
+    refetchInterval: 60000,
+  });
+  const apps = useQuery({
+    queryKey: ["applications", "attention"],
+    queryFn: () => endpoints.listApplications().then((r) => r.data),
+    refetchInterval: 120000,
+  });
+
+  const lastScanAt = parseScanTime(
+    normalizeList(scans.data, ["scans", "items", "results"])[0]
+  );
+  const appList = normalizeList(apps.data, ["applications", "items", "results", "apps"]);
+  const attention = computeAttention(appList, lastScanAt);
+  const crit = attention.filter((i) => i.sev === 3).length;
+  const fresh = freshness(lastScanAt);
+
   return (
-    <header className="h-14 shrink-0 flex items-center gap-4 px-4 border-b border-bg-hover bg-bg-panel">
+    <header className="h-14 shrink-0 flex items-center gap-3 px-4 border-b border-bg-hover bg-bg-panel">
       <div className="flex items-baseline gap-1.5 select-none">
-        <span className="text-[15px] font-semibold tracking-tight text-zinc-50">
-          InfraDocs
-        </span>
-        <span className="text-[11px] text-zinc-500 font-mono">v6</span>
+        <span className="text-[15px] font-semibold tracking-tight text-zinc-50">InfraDocs</span>
+        <span className="text-[11px] text-zinc-500 font-mono">v7</span>
       </div>
 
-      <div className="relative flex-1 max-w-md">
-        <input
-          type="search"
-          placeholder="Search assets, projects, ports…"
-          className="w-full bg-bg-card border border-bg-hover rounded-md pl-3 pr-12 py-1.5 text-sm text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-accent/60 transition"
-        />
-        <kbd className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-zinc-500 border border-bg-hover rounded px-1.5 py-0.5 font-mono">
-          ⌘K
-        </kbd>
+      <span className={cn(
+        "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium",
+        fresh.level === "ok" && "bg-emerald-500/10 text-emerald-400",
+        fresh.level === "warn" && "bg-amber-500/10 text-amber-400",
+        fresh.level === "bad" && "bg-red-500/10 text-red-400"
+      )}>
+        <span className={cn(
+          "w-1.5 h-1.5 rounded-full",
+          fresh.level === "ok" && "bg-emerald-400",
+          fresh.level === "warn" && "bg-amber-400",
+          fresh.level === "bad" && "bg-red-400"
+        )} />
+        oci · {fresh.label}
+      </span>
+
+      <button
+        onClick={openPalette}
+        className="group relative flex-1 max-w-md flex items-center gap-2.5 bg-bg-card border border-bg-hover hover:border-zinc-700 rounded-md pl-3 pr-2 py-1.5 text-sm text-zinc-500 transition text-left"
+      >
+        <Search size={14} className="text-zinc-600 group-hover:text-zinc-500 transition" />
+        <span className="flex-1 truncate">Search applications, assets, pages…</span>
+        <kbd className="text-[10px] text-zinc-500 border border-bg-hover rounded px-1.5 py-0.5 font-mono">⌘K</kbd>
+      </button>
+
+      <div className="relative ml-auto">
+        {attention.length > 0 && (
+          <button
+            onClick={() => setShowAttn((s) => !s)}
+            className={cn(
+              "inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium transition border",
+              crit > 0
+                ? "bg-red-500/10 text-red-400 border-red-500/25 hover:bg-red-500/15"
+                : "bg-amber-500/10 text-amber-400 border-amber-500/25 hover:bg-amber-500/15"
+            )}
+          >
+            {crit > 0 ? <CircleAlert size={13} /> : <TriangleAlert size={13} />}
+            {attention.length}
+          </button>
+        )}
+        {showAttn && (
+          <>
+            <div className="fixed inset-0 z-40" onClick={() => setShowAttn(false)} />
+            <div className="absolute right-0 top-11 z-50 w-[380px] rounded-xl bg-bg-panel border border-bg-hover shadow-2xl overflow-hidden">
+              <div className="px-4 py-2.5 text-[10px] font-medium uppercase tracking-[0.08em] text-zinc-600 border-b border-bg-hover">
+                needs attention · {attention.length}
+              </div>
+              <div className="max-h-[50vh] overflow-y-auto py-1">
+                {attention.map((it, i) => (
+                  <button
+                    key={i}
+                    onClick={() => {
+                      if (it.app) openDrawer({ type: "application", name: it.app });
+                      setShowAttn(false);
+                    }}
+                    className="w-full flex items-start gap-2.5 px-4 py-2.5 text-left hover:bg-white/[0.04] transition"
+                  >
+                    <span className={cn(
+                      "mt-1.5 w-1.5 h-1.5 rounded-full shrink-0",
+                      it.sev === 3 ? "bg-red-400" : it.sev === 2 ? "bg-amber-400" : "bg-sky-400"
+                    )} />
+                    <span className="flex-1 text-[12.5px] text-zinc-300 leading-snug">
+                      {it.app && <span className="text-zinc-500 font-mono">{it.app} · </span>}
+                      {it.text}
+                    </span>
+                    <span className="text-[10px] text-zinc-600 font-mono mt-0.5 shrink-0">{it.kind}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
       <button
         onClick={() => triggerScan.mutate()}
         disabled={triggerScan.isPending}
-        className="ml-auto inline-flex items-center gap-1.5 bg-accent hover:bg-accent-dim text-white text-sm font-medium px-3 py-1.5 rounded-md disabled:opacity-50 transition"
+        className="inline-flex items-center gap-1.5 bg-accent hover:bg-accent-dim text-white text-sm font-medium px-3 py-1.5 rounded-md disabled:opacity-50 transition"
       >
         <RefreshCw size={14} className={cn(triggerScan.isPending && "animate-spin")} />
         {triggerScan.isPending ? "Scanning…" : "Scan now"}

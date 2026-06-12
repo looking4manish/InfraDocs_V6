@@ -8,9 +8,9 @@ export default {
         bg: {
           base: "#000000",
           panel: "#0a0a0c",
-          card: "#121214",
-          elev: "#19191d",
-          hover: "#242429",
+          card: "#0f0f12",
+          elev: "#16161a",
+          hover: "#1c1c21",
         },
         accent: {
           DEFAULT: "#8b5cf6",

@@ -1,5 +1,22 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import {
+  Play,
+  Square,
+  RotateCw,
+  RefreshCw,
+  ScrollText,
+  Activity,
+  ArrowUp,
+  ArrowDown,
+  FlaskConical,
+  Loader2,
+  Search,
+  BarChart3,
+  ToggleRight,
+  ToggleLeft,
+  Download,
+} from "lucide-react";
 
 const MUTATING = new Set([
   "start", "stop", "restart", "up", "down", "reload",
@@ -7,6 +24,24 @@ const MUTATING = new Set([
 
 // Actions whose result is mainly stdout text — show output inline after success.
 const TEXT_OUTPUT = new Set(["logs", "status", "test"]);
+
+// Per-action icon, theme-matched. Unknown actions render no icon (safe fallback).
+const ICONS = {
+  start: Play,
+  stop: Square,
+  restart: RotateCw,
+  reload: RefreshCw,
+  up: ArrowUp,
+  down: ArrowDown,
+  logs: ScrollText,
+  status: Activity,
+  test: FlaskConical,
+  inspect: Search,
+  stats: BarChart3,
+  enable: ToggleRight,
+  disable: ToggleLeft,
+  pull: Download,
+};
 
 export default function ActionButton({
   action,
@@ -57,9 +92,13 @@ export default function ActionButton({
       ? "px-2 py-0.5 text-[11px]"
       : "px-2.5 py-1 text-xs";
 
+  const iconSize = size === "xs" ? 12 : 13;
+
   const baseClasses = MUTATING.has(action)
     ? "bg-rose-500/15 text-rose-200 hover:bg-rose-500/25 border border-rose-500/20"
     : "bg-bg-hover text-slate-200 hover:bg-accent/20 hover:text-accent border border-bg-hover";
+
+  const Icon = ICONS[action] || null;
 
   return (
     <div className={`inline-block ${className}`}>
@@ -67,9 +106,14 @@ export default function ActionButton({
         onClick={onClick}
         disabled={disabled || mut.isPending}
         title={disabled ? disabledReason : ""}
-        className={`rounded ${sizeClasses} ${baseClasses} disabled:opacity-40 disabled:cursor-not-allowed`}
+        className={`inline-flex items-center gap-1.5 rounded ${sizeClasses} ${baseClasses} disabled:opacity-40 disabled:cursor-not-allowed`}
       >
-        {mut.isPending ? "…" : (label || action)}
+        {mut.isPending ? (
+          <Loader2 size={iconSize} className="animate-spin shrink-0" />
+        ) : (
+          Icon && <Icon size={iconSize} className="shrink-0" />
+        )}
+        <span>{label || action}</span>
       </button>
       {output && (
         <ActionOutputModal

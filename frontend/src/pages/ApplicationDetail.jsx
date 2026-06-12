@@ -4,6 +4,7 @@ import { endpoints } from "../api/client";
 import { formatBytes } from "../components/Bytes";
 import ActionButton from "../components/ActionButton";
 import StatePill from "../components/StatePill";
+import TopologyLane from "../components/TopologyLane";
 
 function Section({ title, count, children, right }) {
   return (
@@ -204,6 +205,11 @@ export default function ApplicationDetail() {
 
       {app && (
         <>
+          {/* V7 topology lane — derived from nginx_detail / containers_detail / links */}
+          <div className="mb-5">
+            <TopologyLane app={app} storage={storage.data} />
+          </div>
+
           {/* Top-line stats */}
           <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
             <StatCard label="Components" value={app.components_count ?? 0} />

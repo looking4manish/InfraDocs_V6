@@ -1,8 +1,10 @@
 import { BrowserRouter, Route, Routes, Outlet, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import Header from "./components/Header";
-import Sidebar from "./components/Sidebar";
+import DrawerProvider from "./components/DrawerProvider";
+import CommandPalette from "./components/CommandPalette";
 import Dashboard from "./pages/Dashboard";
+import LensHome from "./pages/LensHome";
 import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
 import Applications from "./pages/Applications";
@@ -19,7 +21,6 @@ function AppShell() {
     <div className="h-screen flex flex-col">
       <Header />
       <div className="flex-1 flex overflow-hidden">
-        <Sidebar />
         <main className="flex-1 overflow-y-auto">
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
@@ -42,21 +43,24 @@ function AppShell() {
 export default function App() {
   return (
     <BrowserRouter>
-      <Routes>
-        <Route element={<AppShell />}>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/applications" element={<Applications />}>
-            <Route path=":name" element={<ApplicationPanel />} />
+      <DrawerProvider>
+        <CommandPalette />
+        <Routes>
+          <Route element={<AppShell />}>
+            <Route path="/" element={<LensHome />} />
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/applications" element={<Applications />} />
+            <Route path="/applications/:name" element={<ApplicationPanel />} />
+            <Route path="/projects" element={<Projects />} />
+            <Route path="/projects/:name" element={<ProjectDetail />} />
+            <Route path="/assets" element={<Assets />} />
+            <Route path="/ports" element={<Ports />} />
+            <Route path="/storage" element={<Storage />} />
+            <Route path="/actions" element={<Actions />} />
+            <Route path="/scans" element={<Scans />} />
           </Route>
-          <Route path="/projects" element={<Projects />} />
-          <Route path="/projects/:name" element={<ProjectDetail />} />
-          <Route path="/assets" element={<Assets />} />
-          <Route path="/ports" element={<Ports />} />
-          <Route path="/storage" element={<Storage />} />
-          <Route path="/actions" element={<Actions />} />
-          <Route path="/scans" element={<Scans />} />
-        </Route>
-      </Routes>
+        </Routes>
+      </DrawerProvider>
     </BrowserRouter>
   );
 }
