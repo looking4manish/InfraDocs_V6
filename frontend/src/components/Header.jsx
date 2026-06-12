@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import { RefreshCw, Search, TriangleAlert, CircleAlert } from "lucide-react";
 import { endpoints } from "../api/client";
 import { cn } from "../lib/cn";
@@ -14,6 +15,7 @@ function openPalette() {
 
 export default function Header() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const { openDrawer } = useDrawer();
   const [showAttn, setShowAttn] = useState(false);
 
@@ -43,10 +45,14 @@ export default function Header() {
 
   return (
     <header className="h-14 shrink-0 flex items-center gap-3 px-4 border-b border-bg-hover bg-bg-panel">
-      <div className="flex items-baseline gap-1.5 select-none">
+      <button
+        onClick={() => navigate("/")}
+        title="Home"
+        className="group flex items-baseline gap-1.5 select-none rounded-md -mx-1 px-1 transition hover:bg-bg-elev"
+      >
         <span className="text-[15px] font-semibold tracking-tight text-zinc-50">InfraDocs</span>
-        <span className="text-[11px] text-zinc-500 font-mono">v7</span>
-      </div>
+        <span className="text-[11px] text-zinc-500 group-hover:text-accent-soft font-mono transition">v7</span>
+      </button>
 
       <span className={cn(
         "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium",

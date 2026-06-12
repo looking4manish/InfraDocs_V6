@@ -1,7 +1,19 @@
+import { motion, useReducedMotion } from "motion/react";
 import { Globe, Server, Plug, Box, HardDrive, ShieldCheck, ShieldAlert, Activity, Link2 } from "lucide-react";
 import ActionBar from "./ActionBar";
 import { cn } from "../lib/cn";
 import { formatBytes } from "./Bytes";
+
+const SPRING = { type: "spring", stiffness: 400, damping: 36 };
+
+function rowVariants(reduce) {
+  return { hidden: {}, show: { transition: { staggerChildren: reduce ? 0 : 0.045 } } };
+}
+function itemVariants(reduce) {
+  return reduce
+    ? { hidden: { opacity: 1, y: 0 }, show: { opacity: 1, y: 0 } }
+    : { hidden: { opacity: 0, y: 10 }, show: { opacity: 1, y: 0, transition: SPRING } };
+}
 
 // Pick the authoritative nginx block for a server_name: prefer one that actually
 // proxies somewhere (has upstream_port) and/or carries the real url. The :80
@@ -18,11 +30,14 @@ function strongestNginx(nginx_detail = []) {
   return scored[0];
 }
 
-function Node({ icon: Icon, kind, title, children, state, dashed }) {
+function Node({ icon: Icon, kind, title, children, state, dashed, reduce }) {
   return (
-    <div
+    <motion.div
+      variants={itemVariants(reduce)}
+      whileHover={reduce ? undefined : { y: -3 }}
+      transition={SPRING}
       className={cn(
-        "flex-none w-[188px] rounded-[13px] p-3.5 transition-transform duration-200 hover:-translate-y-0.5",
+        "flex-none w-[188px] rounded-[13px] p-3.5",
         "bg-bg-card border",
         dashed ? "border-dashed border-amber-500/30" : "border-bg-hover hover:bg-bg-elev"
       )}
@@ -40,7 +55,7 @@ function Node({ icon: Icon, kind, title, children, state, dashed }) {
         </div>
       )}
       {state}
-    </div>
+    </motion.div>
   );
 }
 
@@ -60,9 +75,9 @@ function StatePill({ running }) {
   );
 }
 
-function Connector({ label, dashed }) {
+function Connector({ label, dashed, reduce }) {
   return (
-    <div className="flex-none w-[72px] flex flex-col items-center justify-center gap-1.5 pt-7">
+    <motion.div variants={itemVariants(reduce)} className="flex-none w-[72px] flex flex-col items-center justify-center gap-1.5 pt-7">
       <span
         className={cn(
           "text-[9.5px] rounded px-1.5 py-px whitespace-nowrap border",
@@ -88,11 +103,12 @@ function Connector({ label, dashed }) {
           )}
         />
       </span>
-    </div>
+    </motion.div>
   );
 }
 
 export default function TopologyLane({ app, storage }) {
+  const reduce = useReducedMotion();
   const nginx = strongestNginx(app?.nginx_detail);
   const upstreamPort = nginx?.upstream_port ?? null;
   const url = nginx?.url || app?.urls?.[0] || null;
@@ -122,16 +138,21 @@ export default function TopologyLane({ app, storage }) {
         Topology
       </div>
 
-      <div className="flex items-stretch overflow-x-auto pb-2.5 pt-1">
+      <motion.div
+        variants={rowVariants(reduce)}
+        initial="hidden"
+        animate="show"
+        className="flex items-stretch overflow-x-auto pb-2.5 pt-1"
+      >
         {url && (
           <>
-            <Node icon={Globe} kind="URL" title={url.replace(/^https?:\/\//, "")}>
+            <Node icon={Globe} kind="URL" title={url.replace(/^https?:\/\//, "")} reduce={reduce}>
               <span>
                 <span className="text-zinc-600">scheme</span>{" "}
                 {url.startsWith("https") ? "https" : "http"}
               </span>
             </Node>
-            <Connector label={nginx?.cloudflare_origin ? "cloudflare" : "tls"} />
+            <Connector label={nginx?.cloudflare_origin ? "cloudflare" : "tls"} reduce={reduce} />
           </>
         )}
 
@@ -141,6 +162,7 @@ export default function TopologyLane({ app, storage }) {
               icon={Server}
               kind="Nginx"
               title={nginx.server_name}
+              reduce={reduce}
               state={
                 nginx.internet_exposed ? (
                   <span className="inline-flex items-center gap-1 mt-2 text-[10.5px] text-emerald-300/90">
@@ -173,20 +195,20 @@ export default function TopologyLane({ app, storage }) {
               </span>
             </Node>
             {upstreamPort != null && (
-              <Connector label={`proxy_pass :${upstreamPort}`} />
+              <Connector label={`proxy_pass :${upstreamPort}`} reduce={reduce} />
             )}
           </>
         )}
 
         {upstreamPort != null && (
           <>
-            <Node icon={Plug} kind="Host port" title={`:${upstreamPort}`}>
+            <Node icon={Plug} kind="Host port" title={`:${upstreamPort}`} reduce={reduce}>
               <span>
                 <span className="text-zinc-600">upstream</span>{" "}
                 {nginx?.upstream_host || "localhost"}
               </span>
             </Node>
-            {container && <Connector label={`host_port:${upstreamPort}`} />}
+            {container && <Connector label={`host_port:${upstreamPort}`} reduce={reduce} />}
           </>
         )}
 
@@ -195,6 +217,7 @@ export default function TopologyLane({ app, storage }) {
             icon={Box}
             kind="Container"
             title={container.name}
+            reduce={reduce}
             state={
               <div className="flex flex-col gap-2 mt-2">
                 <StatePill running={container.running} />
@@ -226,20 +249,26 @@ export default function TopologyLane({ app, storage }) {
             </span>
           </Node>
         )}
-      </div>
+      </motion.div>
 
       {volumes.length > 0 && (
         <>
           <div className="text-[10px] uppercase tracking-[0.09em] text-zinc-600 font-medium mt-4 mb-3">
             Storage
           </div>
-          <div className="flex items-stretch overflow-x-auto pb-2.5 pt-1 gap-3">
+          <motion.div
+            variants={rowVariants(reduce)}
+            initial="hidden"
+            animate="show"
+            className="flex items-stretch overflow-x-auto pb-2.5 pt-1 gap-3"
+          >
             {volumes.map((v) => (
               <Node
                 key={v.storage_id || v.name}
                 icon={HardDrive}
                 kind={v.kind || "volume"}
                 title={v.name}
+                reduce={reduce}
               >
                 <span className="font-mono text-[10.5px] text-zinc-600 break-all">
                   {v.path || v.mountpoint}
@@ -250,7 +279,7 @@ export default function TopologyLane({ app, storage }) {
                 </span>
               </Node>
             ))}
-          </div>
+          </motion.div>
         </>
       )}
 
@@ -260,9 +289,16 @@ export default function TopologyLane({ app, storage }) {
 }
 
 function LinkEvidence({ links }) {
+  const reduce = useReducedMotion();
   if (!links.length) return null;
   return (
-    <div className="bg-bg-card border border-bg-hover rounded-[13px] mt-5 overflow-hidden">
+    <motion.div
+      variants={{ hidden: {}, show: { transition: { staggerChildren: reduce ? 0 : 0.035 } } }}
+      initial="hidden"
+      whileInView="show"
+      viewport={{ once: true, margin: "-60px" }}
+      className="bg-bg-card border border-bg-hover rounded-[13px] mt-5 overflow-hidden"
+    >
       <div className="flex items-center gap-1.5 px-4 py-3 border-b border-bg-hover">
         <Link2 size={13} className="text-zinc-600" />
         <span className="text-[11px] uppercase tracking-[0.08em] text-zinc-600 font-semibold">
@@ -272,8 +308,11 @@ function LinkEvidence({ links }) {
       {links.map((l, i) => {
         const weak = l.via === "project_tag";
         return (
-          <div
+          <motion.div
             key={i}
+            variants={reduce
+              ? { hidden: { opacity: 1, y: 0 }, show: { opacity: 1, y: 0 } }
+              : { hidden: { opacity: 0, y: 6 }, show: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 400, damping: 36 } } }}
             className="grid grid-cols-[140px_1fr_70px] gap-3.5 items-center px-4 py-2 border-b border-bg-hover/40 last:border-0 hover:bg-bg-elev text-[12.5px]"
           >
             <span
@@ -293,9 +332,9 @@ function LinkEvidence({ links }) {
             <span className="justify-self-end text-zinc-600 text-[10.5px] uppercase tracking-wide">
               pass {l.pass}
             </span>
-          </div>
+          </motion.div>
         );
       })}
-    </div>
+    </motion.div>
   );
 }

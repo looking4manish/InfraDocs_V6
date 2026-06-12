@@ -35,3 +35,22 @@ main {
   background-image: radial-gradient(rgba(255, 255, 255, 0.030) 1px, transparent 1px);
   background-size: 24px 24px;
 }
+
+/* ---- V7 3.5.6m: shimmer skeletons ---- */
+@keyframes skeleton-shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton-shimmer {
+  background-image: linear-gradient(
+    100deg,
+    rgba(255,255,255,0) 30%,
+    rgba(255,255,255,0.05) 50%,
+    rgba(255,255,255,0) 70%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-shimmer { animation: none; }
+}

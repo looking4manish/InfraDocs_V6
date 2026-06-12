@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { motion, AnimatePresence, useReducedMotion } from "motion/react";
 import {
   Play,
   Square,
@@ -115,28 +116,39 @@ export default function ActionButton({
         )}
         <span>{label || action}</span>
       </button>
-      {output && (
-        <ActionOutputModal
-          action={action}
-          output={output}
-          onClose={() => setOutput(null)}
-          asText={TEXT_OUTPUT.has(action)}
-        />
-      )}
+      <AnimatePresence>
+        {output && (
+          <ActionOutputModal
+            action={action}
+            output={output}
+            onClose={() => setOutput(null)}
+            asText={TEXT_OUTPUT.has(action)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
 
 function ActionOutputModal({ action, output, onClose, asText }) {
+  const reduce = useReducedMotion();
   const isError = output.status === "error" || output.status === "failed";
   return (
-    <div
+    <motion.div
       className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"
       onClick={onClose}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.15 }}
     >
-      <div
+      <motion.div
         className="bg-bg-panel border border-bg-hover rounded-lg w-full max-w-3xl max-h-[80vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
+        initial={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.96, y: 8 }}
+        animate={reduce ? { opacity: 1 } : { opacity: 1, scale: 1, y: 0 }}
+        exit={reduce ? { opacity: 0 } : { opacity: 0, scale: 0.97, y: 6 }}
+        transition={{ type: "spring", stiffness: 400, damping: 32 }}
       >
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-bg-hover">
           <div className="flex items-center gap-2">
@@ -190,7 +202,7 @@ function ActionOutputModal({ action, output, onClose, asText }) {
             </div>
           )}
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }

@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
+import { motion, AnimatePresence, useReducedMotion } from "motion/react";
 import { Container, Cog, Globe, HardDrive, Package } from "lucide-react";
 import { endpoints } from "../api/client";
 import { formatBytes } from "../components/Bytes";
@@ -8,6 +9,21 @@ import { cn } from "../lib/cn";
 import Dashboard from "./Dashboard";
 
 const LENSES = ["Dashboard", "Projects", "Servers", "Resources", "Assets"];
+
+const SPRING = { type: "spring", stiffness: 400, damping: 36 };
+
+// Stagger parent + child variants. reduce=true collapses to instant.
+function gridVariants(reduce) {
+  return {
+    hidden: {},
+    show: { transition: { staggerChildren: reduce ? 0 : 0.03 } },
+  };
+}
+function cardVariants(reduce) {
+  return reduce
+    ? { hidden: { opacity: 1, y: 0 }, show: { opacity: 1, y: 0 } }
+    : { hidden: { opacity: 0, y: 8 }, show: { opacity: 1, y: 0, transition: SPRING } };
+}
 
 // Host facts — static lab truth until Phase 6 agents populate substrate live.
 const HOSTS = [
@@ -47,13 +63,17 @@ function Chip({ icon: Icon, n, label }) {
   );
 }
 
-function ProjectLensCard({ app, onOpen }) {
+function ProjectLensCard({ app, onOpen, reduce }) {
   const live = hasRuntime(app);
   const dot = !live ? "bg-zinc-600" : app.internet_exposed ? "bg-emerald-400" : "bg-sky-400";
   return (
-    <button
+    <motion.button
+      variants={cardVariants(reduce)}
+      whileHover={reduce ? undefined : { y: -2 }}
+      whileTap={reduce ? undefined : { y: 0 }}
+      transition={SPRING}
       onClick={() => onOpen(app.name)}
-      className="group text-left bg-bg-card border border-bg-hover rounded-2xl p-4 transition-all duration-200 hover:-translate-y-0.5 hover:bg-bg-elev hover:border-zinc-700 relative overflow-hidden"
+      className="group text-left bg-bg-card border border-bg-hover rounded-2xl p-4 hover:bg-bg-elev hover:border-zinc-700 relative overflow-hidden"
     >
       <span className="absolute top-4 right-4 text-accent-soft opacity-0 -translate-x-1 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-200 text-sm">→</span>
       <div className="flex items-center gap-2">
@@ -83,11 +103,11 @@ function ProjectLensCard({ app, onOpen }) {
         {app.volumes?.length > 0 && <Chip icon={HardDrive} n={app.volumes.length} label="volumes" />}
         {app.images?.length > 0 && <Chip icon={Package} n={app.images.length} label="images" />}
       </div>
-    </button>
+    </motion.button>
   );
 }
 
-function ProjectsLens({ apps, onOpen }) {
+function ProjectsLens({ apps, onOpen, reduce }) {
   const sorted = useMemo(
     () => [...apps].sort((a, b) => attentionScore(a) - attentionScore(b)),
     [apps]
@@ -100,25 +120,36 @@ function ProjectsLens({ apps, onOpen }) {
           One card per <span className="font-mono text-zinc-400">~/projects/&lt;name&gt;</span> — attention-sorted
         </p>
       </div>
-      <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))" }}>
+      <motion.div
+        variants={gridVariants(reduce)}
+        initial="hidden"
+        animate="show"
+        className="grid gap-3"
+        style={{ gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))" }}
+      >
         {sorted.map((a) => (
-          <ProjectLensCard key={a.application_id || a.name} app={a} onOpen={onOpen} />
+          <ProjectLensCard key={a.application_id || a.name} app={a} onOpen={onOpen} reduce={reduce} />
         ))}
-      </div>
+      </motion.div>
     </>
   );
 }
 
-function ServersLens({ apps }) {
+function ServersLens({ apps, reduce }) {
   return (
     <>
       <div className="flex items-baseline gap-3 mb-4">
         <h1 className="text-[21px] font-semibold tracking-tight">Servers</h1>
         <p className="text-[13px] text-zinc-500">Hosts in the Tailscale mesh — substrate facts per host</p>
       </div>
-      <div className="space-y-5">
+      <motion.div
+        variants={gridVariants(reduce)}
+        initial="hidden"
+        animate="show"
+        className="space-y-5"
+      >
         {HOSTS.map((h) => (
-          <div key={h.id}>
+          <motion.div key={h.id} variants={cardVariants(reduce)}>
             <div className="flex items-center gap-2.5 mb-2.5">
               <span className={cn("w-2 h-2 rounded-full", h.live ? "bg-emerald-400" : "bg-zinc-600")} />
               <span className="text-[15px] font-semibold">{h.name}</span>
@@ -141,9 +172,9 @@ function ServersLens({ apps }) {
                 ◇ no agent yet{h.note ? ` — ${h.note}` : ""} <span className="text-zinc-600">(Phase 6)</span>
               </div>
             )}
-          </div>
+          </motion.div>
         ))}
-      </div>
+      </motion.div>
     </>
   );
 }
@@ -159,6 +190,7 @@ function Fact({ k, v, mono }) {
 
 export default function LensHome() {
   const [lens, setLens] = useState("Dashboard");
+  const reduce = useReducedMotion();
   const navigate = useNavigate();
   const q = useQuery({
     queryKey: ["applications"],
@@ -191,22 +223,34 @@ export default function LensHome() {
       {q.isLoading && (
         <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))" }}>
           {Array.from({ length: 6 }).map((_, i) => (
-            <div key={i} className="h-[132px] rounded-2xl bg-bg-card border border-bg-hover animate-pulse" />
+            <div key={i} className="h-[132px] rounded-2xl bg-bg-card border border-bg-hover skeleton-shimmer" />
           ))}
         </div>
       )}
 
-      {!q.isLoading && lens === "Projects" && <ProjectsLens apps={projects} onOpen={open} />}
-      {!q.isLoading && lens === "Servers" && <ServersLens apps={all} />}
-      {lens === "Dashboard" && <Dashboard />}
-      {lens === "Resources" && <Dashboard />}
-      {lens === "Assets" && (
-        <div className="flex items-baseline gap-3 mb-4">
-          <h1 className="text-[21px] font-semibold tracking-tight">Assets</h1>
-          <p className="text-[13px] text-zinc-500">
-            Open the <button onClick={() => navigate("/assets")} className="text-accent-soft hover:underline">full asset table →</button>
-          </p>
-        </div>
+      {!q.isLoading && (
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={lens}
+            initial={reduce ? { opacity: 0 } : { opacity: 0, y: 4 }}
+            animate={reduce ? { opacity: 1 } : { opacity: 1, y: 0 }}
+            exit={reduce ? { opacity: 0 } : { opacity: 0, y: -4 }}
+            transition={{ duration: 0.16 }}
+          >
+            {lens === "Projects" && <ProjectsLens apps={projects} onOpen={open} reduce={reduce} />}
+            {lens === "Servers" && <ServersLens apps={all} reduce={reduce} />}
+            {lens === "Dashboard" && <Dashboard />}
+            {lens === "Resources" && <Dashboard />}
+            {lens === "Assets" && (
+              <div className="flex items-baseline gap-3 mb-4">
+                <h1 className="text-[21px] font-semibold tracking-tight">Assets</h1>
+                <p className="text-[13px] text-zinc-500">
+                  Open the <button onClick={() => navigate("/assets")} className="text-accent-soft hover:underline">full asset table →</button>
+                </p>
+              </div>
+            )}
+          </motion.div>
+        </AnimatePresence>
       )}
     </div>
   );
