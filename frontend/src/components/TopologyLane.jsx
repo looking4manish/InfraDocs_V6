@@ -164,11 +164,16 @@ export default function TopologyLane({ app, storage }) {
               title={nginx.server_name}
               reduce={reduce}
               state={
-                nginx.internet_exposed ? (
-                  <span className="inline-flex items-center gap-1 mt-2 text-[10.5px] text-emerald-300/90">
-                    <Globe size={11} /> internet-exposed
-                  </span>
-                ) : null
+                <div className="flex flex-col gap-2 mt-2">
+                  {nginx.internet_exposed && (
+                    <span className="inline-flex items-center gap-1 text-[10.5px] text-emerald-300/90">
+                      <Globe size={11} /> internet-exposed
+                    </span>
+                  )}
+                  <ActionBar
+                    entity={{ category: "nginx_server_block", name: nginx.server_name, resolveByName: true }}
+                  />
+                </div>
               }
             >
               <span>
