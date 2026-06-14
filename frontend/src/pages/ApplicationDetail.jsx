@@ -159,7 +159,7 @@ export default function ApplicationDetail() {
     <div>
       <div className="flex items-center justify-between mb-4">
         <div>
-          <Link to="/applications" className="text-xs text-slate-400 hover:text-accent">
+          <Link to="/" className="text-xs text-slate-400 hover:text-accent">
             ← All applications
           </Link>
           <div className="flex items-center gap-2 mt-1">

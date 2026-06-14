@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence, useReducedMotion } from "motion/react";
 import {
   Play,
@@ -133,9 +134,9 @@ export default function ActionButton({
 function ActionOutputModal({ action, output, onClose, asText }) {
   const reduce = useReducedMotion();
   const isError = output.status === "error" || output.status === "failed";
-  return (
+  return createPortal((
     <motion.div
-      className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4"
+      className="fixed inset-0 bg-black/60 z-[80] flex items-center justify-center p-4"
       onClick={onClose}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
@@ -204,5 +205,5 @@ function ActionOutputModal({ action, output, onClose, asText }) {
         </div>
       </motion.div>
     </motion.div>
-  );
+  ), document.body);
 }
