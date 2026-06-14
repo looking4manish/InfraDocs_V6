@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence, useReducedMotion } from "motion/react";
 import { Container, Cog, Globe, HardDrive, Package } from "lucide-react";
+import ActionButton from "../components/ActionButton";
 import { endpoints } from "../api/client";
 import { formatBytes } from "../components/Bytes";
 import { cn } from "../lib/cn";
@@ -63,20 +64,44 @@ function Chip({ icon: Icon, n, label }) {
   );
 }
 
+function appFireWrapper(name, action) {
+  return () =>
+    endpoints.fireApplicationAction(name, action).then((res) => {
+      const d = res?.data || {};
+      const lines = (d.results || []).map(
+        (r) => `${r.status === "success" ? "✓" : r.status === "skipped" ? "·" : "✗"} ${r.category} ${r.asset_name} → ${r.status}`
+      );
+      const ok = (d.results || []).filter((r) => r.status === "success").length;
+      return { data: { status: ok > 0 ? "success" : "failed",
+        stdout: `${action} on ${name} — ${d.targets || 0} target(s), ${ok} ok\n\n` + lines.join("\n"),
+        stderr: "" } };
+    });
+}
+
+function AppActionRow({ name }) {
+  return (
+    <div className="absolute bottom-3 right-3 z-[2] flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+      onClick={(e) => { e.stopPropagation(); e.preventDefault(); }}>
+      {["restart", "up", "down"].map((v) => (
+        <ActionButton key={v} action={v} label={v} size="xs" fire={appFireWrapper(name, v)} />
+      ))}
+    </div>
+  );
+}
+
 function ProjectLensCard({ app, onOpen, reduce }) {
   const live = hasRuntime(app);
   const dot = !live ? "bg-zinc-600" : app.internet_exposed ? "bg-emerald-400" : "bg-sky-400";
   return (
-    <motion.button
+    <motion.div
       variants={cardVariants(reduce)}
       whileHover={reduce ? undefined : { y: -2 }}
-      whileTap={reduce ? undefined : { y: 0 }}
       transition={SPRING}
-      onClick={() => onOpen(app.name)}
       className="group text-left bg-bg-card border border-bg-hover rounded-2xl p-4 hover:bg-bg-elev hover:border-zinc-700 relative overflow-hidden"
     >
-      <span className="absolute top-4 right-4 text-accent-soft opacity-0 -translate-x-1 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-200 text-sm">→</span>
-      <div className="flex items-center gap-2">
+      <button type="button" onClick={() => onOpen(app.name)} className="absolute inset-0 z-0" aria-label={`Open ${app.name}`} />
+      <span className="pointer-events-none absolute top-4 right-4 text-accent-soft opacity-0 -translate-x-1 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-200 text-sm">→</span>
+      <div className="pointer-events-none flex items-center gap-2">
         <span className={cn("w-2 h-2 rounded-full shrink-0", dot)} />
         <span className={cn("text-[15px] font-semibold tracking-tight truncate", !live && "text-zinc-500")}>{app.name}</span>
         <span className="text-[9.5px] font-semibold px-1.5 py-px rounded bg-accent/15 text-accent-soft shrink-0">{app.type}</span>
@@ -85,25 +110,26 @@ function ProjectLensCard({ app, onOpen, reduce }) {
         )}
       </div>
       {app.urls?.length > 0 ? (
-        <div className="text-[12px] text-zinc-500 mt-2 truncate">{app.urls[0].replace(/^https?:\/\//, "")}</div>
+        <div className="pointer-events-none text-[12px] text-zinc-500 mt-2 truncate">{app.urls[0].replace(/^https?:\/\//, "")}</div>
       ) : (
-        <div className="text-[12px] text-zinc-600 mt-2 truncate">{live ? "no public url" : "folder tracked only"}</div>
+        <div className="pointer-events-none text-[12px] text-zinc-600 mt-2 truncate">{live ? "no public url" : "folder tracked only"}</div>
       )}
-      <div className="text-[12px] text-mono text-zinc-400 font-mono tabular-nums mt-2">
+      <div className="pointer-events-none text-[12px] text-mono text-zinc-400 font-mono tabular-nums mt-2">
         {app.components_count ?? 0} comp
         <span className="text-zinc-700 mx-1.5">·</span>
         {app.listening_ports?.length || 0} ports
         <span className="text-zinc-700 mx-1.5">·</span>
         {formatBytes(app.total_size_bytes)}
       </div>
-      <div className="flex flex-wrap gap-1.5 mt-3">
+      <div className="pointer-events-none flex flex-wrap gap-1.5 mt-3">
         {app.containers?.length > 0 && <Chip icon={Container} n={app.containers.length} label="containers" />}
         {app.systemd_units?.length > 0 && <Chip icon={Cog} n={app.systemd_units.length} label="services" />}
         {app.nginx_sites?.length > 0 && <Chip icon={Globe} n={app.nginx_sites.length} label="nginx" />}
         {app.volumes?.length > 0 && <Chip icon={HardDrive} n={app.volumes.length} label="volumes" />}
         {app.images?.length > 0 && <Chip icon={Package} n={app.images.length} label="images" />}
       </div>
-    </motion.button>
+    <AppActionRow name={app.name} />
+    </motion.div>
   );
 }
 
