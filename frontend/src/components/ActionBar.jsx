@@ -6,6 +6,7 @@ import { CARD_REGISTRY, ACTION_META, actionsFor, isDestructive } from "../regist
 import { useAllowedActions } from "../hooks/useAllowedActions";
 import { endpoints } from "../api/client";
 import ActionButton from "./ActionButton";
+import LastActionChip from "./LastActionChip";
 import { cn } from "../lib/cn";
 
 // The single action surface every card shape consumes.
@@ -106,6 +107,7 @@ export default function ActionBar({ entity, className = "", size = "xs", alwaysO
             )}
         </>
       )}
+      <LastActionChip assetId={id} className="ml-1" />
     </div>
   );
 }
