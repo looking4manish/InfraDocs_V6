@@ -73,7 +73,11 @@ def test_allowed_actions_is_complete():
     assert ALLOWED_ACTIONS["docker_container"] == {"start", "stop", "restart", "logs", "inspect", "stats"}
     assert ALLOWED_ACTIONS["systemd_service"] == {"start", "stop", "restart", "logs", "status", "enable", "disable"}
     assert ALLOWED_ACTIONS["nginx_server_block"] == {"test", "reload"}
-    assert ALLOWED_ACTIONS["docker_image"] == {"pull"}
+    assert ALLOWED_ACTIONS["docker_image"] == {"pull", "prune"}
+    assert ALLOWED_ACTIONS["docker_compose"] == {"up", "down", "restart", "recreate"}
+    assert ALLOWED_ACTIONS["systemd_timer"] == {"start", "stop", "restart", "status", "enable", "disable", "trigger"}
+    assert ALLOWED_ACTIONS["docker_volume"] == {"inspect", "prune"}
+    assert ALLOWED_ACTIONS["storage_mount"] == {"inspect"}
 
 
 # ----------------------- self-protection ------------------------------------
@@ -288,3 +292,50 @@ def test_docker_container_self_protect_now_enforced():
     asset = _container_asset(name="infradocs-v6-api")
     with pytest.raises(SelfActionRefused):
         dispatch(asset, "restart")
+
+
+def test_compose_recreate_forces_recreate():
+    asset = {"category": "docker_compose", "name": "web", "asset_id": "1", "metadata": {"file_path": "/x/docker-compose.yml"}}
+    with patch("app.actions._run_subprocess") as rs:
+        rs.return_value = ActionResult(status="success")
+        dispatch(asset, "recreate")
+    assert "--force-recreate" in rs.call_args[0][0]
+
+
+def test_timer_trigger_starts_service():
+    asset = {"category": "systemd_timer", "name": "backup.timer", "asset_id": "1", "metadata": {}}
+    with patch("app.actions._run_subprocess") as rs:
+        rs.return_value = ActionResult(status="success")
+        dispatch(asset, "trigger")
+    cmd = rs.call_args[0][0]
+    assert cmd[:4] == ["sudo", "-n", "systemctl", "start"] and cmd[-1] == "backup.service"
+
+
+def test_timer_trigger_is_self_protected():
+    asset = {"category": "systemd_timer", "name": "infradocs-v6-agent.timer", "asset_id": "1", "metadata": {}}
+    with pytest.raises(SelfActionRefused):
+        dispatch(asset, "trigger")
+
+
+def test_docker_image_prune_runs():
+    asset = {"category": "docker_image", "name": "x", "asset_id": "1", "metadata": {}}
+    with patch("app.actions._run_subprocess") as rs:
+        rs.return_value = ActionResult(status="success")
+        dispatch(asset, "prune")
+    assert rs.call_args[0][0] == ["docker", "image", "prune", "-f"]
+
+
+def test_docker_volume_inspect_runs():
+    asset = {"category": "docker_volume", "name": "myvol", "asset_id": "1", "metadata": {}}
+    with patch("app.actions._run_subprocess") as rs:
+        rs.return_value = ActionResult(status="success")
+        dispatch(asset, "inspect")
+    assert rs.call_args[0][0][:3] == ["docker", "volume", "inspect"]
+
+
+def test_storage_mount_inspect_runs():
+    asset = {"category": "storage_mount", "name": "/data", "asset_id": "1", "metadata": {"mountpoint": "/data"}}
+    with patch("app.actions._run_subprocess") as rs:
+        rs.return_value = ActionResult(status="success")
+        dispatch(asset, "inspect")
+    assert rs.call_args[0][0][0] == "findmnt"

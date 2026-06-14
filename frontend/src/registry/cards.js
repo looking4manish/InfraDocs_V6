@@ -23,6 +23,9 @@ export const ACTION_META = {
   reload:  { label: "Reload",  icon: "RefreshCw" },
   test:    { label: "Test",    icon: "FlaskConical" },
   pull:    { label: "Pull",    icon: "Download" },
+  prune:    { label: "Prune",    icon: "Trash2" },
+  recreate: { label: "Recreate", icon: "RefreshCcw" },
+  trigger:  { label: "Run now",  icon: "PlayCircle" },
 };
 
 // Per-category presentation. `fields` lists what an entity card shows.
@@ -47,7 +50,7 @@ export const CARD_REGISTRY = {
     shape: "entity",
     accent: "violet",
     fields: [{ key: "file_path", label: "file" }],
-    actions: ["up", "restart", "down"],
+    actions: ["up", "restart", "recreate", "down"],
     primary: "up",
   },
   systemd_service: {
@@ -65,7 +68,7 @@ export const CARD_REGISTRY = {
     shape: "entity",
     accent: "sky",
     fields: [{ key: "next_run", label: "next" }],
-    actions: ["status", "restart", "enable", "disable", "start", "stop"],
+    actions: ["status", "trigger", "restart", "enable", "disable", "start", "stop"],
     primary: "status",
   },
   nginx_server_block: {
@@ -89,14 +92,18 @@ export const CARD_REGISTRY = {
       { key: "tags", label: "tags" },
       { key: "is_dangling", label: "dangling" },
     ],
-    actions: ["pull"],
+    actions: ["pull", "prune"],
     primary: "pull",
   },
   // Non-actionable shapes (no backend actions; render read-only).
   network_port: { icon: "Plug", label: "Port", shape: "flow_node", accent: "violet",
     fields: [{ key: "port", label: "port" }, { key: "process", label: "proc" }], actions: [] },
+  docker_volume: { icon: "Database", label: "Volume", shape: "entity", accent: "amber",
+    fields: [{ key: "mountpoint", label: "mount" }, { key: "size_bytes", label: "size", fmt: "bytes" }],
+    actions: ["inspect", "prune"], primary: "inspect" },
   storage_mount: { icon: "HardDrive", label: "Storage", shape: "flow_node", accent: "violet",
-    fields: [{ key: "mountpoint", label: "mount" }, { key: "size_bytes", label: "size", fmt: "bytes" }], actions: [] },
+    fields: [{ key: "mountpoint", label: "mount" }, { key: "size_bytes", label: "size", fmt: "bytes" }],
+    actions: ["inspect"], primary: "inspect" },
 };
 
 // Helper: presentation actions for a category, intersected with backend-allowed.

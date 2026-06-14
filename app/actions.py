@@ -40,8 +40,8 @@ ACTION_REGISTRY: Dict[str, Dict[str, Any]] = {
         "self_protect": True,
     },
     "docker_compose": {
-        "allowed": {"up", "down", "restart"},
-        "destructive": {"down", "restart"},
+        "allowed": {"up", "down", "restart", "recreate"},
+        "destructive": {"down", "restart", "recreate"},
         "self_protect": True,
     },
     "systemd_service": {
@@ -50,8 +50,8 @@ ACTION_REGISTRY: Dict[str, Dict[str, Any]] = {
         "self_protect": True,
     },
     "systemd_timer": {
-        "allowed": {"start", "stop", "restart", "status", "enable", "disable"},
-        "destructive": {"stop", "restart", "disable"},
+        "allowed": {"start", "stop", "restart", "status", "enable", "disable", "trigger"},
+        "destructive": {"stop", "restart", "disable", "trigger"},
         "self_protect": True,
     },
     "nginx_server_block": {
@@ -60,7 +60,17 @@ ACTION_REGISTRY: Dict[str, Dict[str, Any]] = {
         "self_protect": False,
     },
     "docker_image": {
-        "allowed": {"pull"},
+        "allowed": {"pull", "prune"},
+        "destructive": {"prune"},
+        "self_protect": False,
+    },
+    "docker_volume": {
+        "allowed": {"inspect", "prune"},
+        "destructive": {"prune"},
+        "self_protect": False,
+    },
+    "storage_mount": {
+        "allowed": {"inspect"},
         "destructive": set(),
         "self_protect": False,
     },
@@ -171,7 +181,7 @@ def _act_docker_compose(
     if not file_path:
         raise ActionError("compose file path missing")
 
-    sub = {"up": ["up", "-d"], "down": ["down"], "restart": ["restart"]}.get(action)
+    sub = {"up": ["up", "-d"], "down": ["down"], "restart": ["restart"], "recreate": ["up", "-d", "--force-recreate"]}.get(action)
     if sub is None:
         raise ActionNotAllowed(action)
 
@@ -191,6 +201,10 @@ def _act_systemd(
 
     if action in ("start", "stop", "restart", "enable", "disable"):
         cmd = ["sudo", "-n", "systemctl", action, name]
+        return _run_subprocess(cmd, timeout=30)
+    if action == "trigger":
+        svc = name[:-6] + ".service" if name.endswith(".timer") else name
+        cmd = ["sudo", "-n", "systemctl", "start", svc]
         return _run_subprocess(cmd, timeout=30)
     if action == "status":
         cmd = ["systemctl", "status", "--no-pager", "-n", "0", name]
@@ -242,6 +256,8 @@ def _act_docker_image(
         except (APIError, DockerException) as e:
             raise ActionError(f"pull failed: {e}")
         return ActionResult(status="success", stdout=f"pulled {ref}")
+    if action == "prune":
+        return _run_subprocess(["docker", "image", "prune", "-f"], timeout=60)
     raise ActionNotAllowed(action)
 
 
@@ -282,7 +298,24 @@ def _run_subprocess(
 # ----------------------- top-level dispatch ---------------------------------
 
 
+def _act_docker_volume(asset, action, args):
+    name = asset["name"]
+    if action == "inspect":
+        return _run_subprocess(["docker", "volume", "inspect", name], timeout=15, allow_nonzero=True)
+    if action == "prune":
+        return _run_subprocess(["docker", "volume", "prune", "-f"], timeout=60)
+    raise ActionNotAllowed(action)
+
+
+def _act_storage_mount(asset, action, args):
+    if action == "inspect":
+        mp = asset.get("metadata", {}).get("mountpoint") or asset["name"]
+        return _run_subprocess(["findmnt", "-T", mp, "--output", "TARGET,SOURCE,FSTYPE,SIZE,USED,AVAIL,USE%"], timeout=10, allow_nonzero=True)
+    raise ActionNotAllowed(action)
+
 _DISPATCH = {
+    "docker_volume": _act_docker_volume,
+    "storage_mount": _act_storage_mount,
     "docker_container": _act_docker_container,
     "docker_compose": _act_docker_compose,
     "systemd_service": _act_systemd,
