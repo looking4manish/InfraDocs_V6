@@ -9,7 +9,7 @@ import { formatBytes } from "../components/Bytes";
 import { cn } from "../lib/cn";
 import Dashboard from "./Dashboard";
 
-const LENSES = ["Dashboard", "Projects", "Servers", "Resources", "Assets"];
+const LENSES = ["Dashboard", "Projects", "Servers", "Assets"];
 
 const SPRING = { type: "spring", stiffness: 400, damping: 36 };
 
@@ -266,7 +266,6 @@ export default function LensHome() {
             {lens === "Projects" && <ProjectsLens apps={projects} onOpen={open} reduce={reduce} />}
             {lens === "Servers" && <ServersLens apps={all} reduce={reduce} />}
             {lens === "Dashboard" && <Dashboard />}
-            {lens === "Resources" && <Dashboard />}
             {lens === "Assets" && (
               <div className="flex items-baseline gap-3 mb-4">
                 <h1 className="text-[21px] font-semibold tracking-tight">Assets</h1>
