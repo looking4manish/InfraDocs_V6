@@ -7,7 +7,7 @@ Self-contained: builds synthetic assets inline; independent of phase-5 fixtures.
 from app.correlator import correlate
 
 
-def _asset(category, name, project, metadata=None, health_indicators=None):
+def _asset(category, name, project, metadata=None, health_indicators=None, status=None):
     a = {
         "category": category,
         "name": name,
@@ -16,6 +16,8 @@ def _asset(category, name, project, metadata=None, health_indicators=None):
     }
     if health_indicators is not None:
         a["health_indicators"] = health_indicators
+    if status is not None:
+        a["status"] = status
     return a
 
 
@@ -332,3 +334,37 @@ def test_legacy_fields_unchanged_in_shape(tmp_path):
     ]
     assert app["application_id"] == "test:app:web"
     assert isinstance(app["components_count"], int)
+
+
+def test_live_shape_running_via_health_indicators(tmp_path):
+
+    """Live scanner shape: running truth lives in health_indicators + top-level
+
+    status, NOT in metadata. Guards the scanner<->correlator contract so the
+
+    metadata-only read can't silently return (the openwebui exited bug)."""
+
+    assets = [
+
+        _asset(
+
+            "docker_container", "live-app", "web",
+
+            {"compose_project": "web", "restart_policy": "always"},
+
+            health_indicators={"running": True},
+
+            status="running",
+
+        )
+
+    ]
+
+    apps = _run(assets, tmp_path)
+
+    detail = apps["web"]["containers_detail"]
+
+    assert detail[0]["running"] is True
+
+    assert apps["web"]["hygiene"]["exited_restart_always"] == []
+

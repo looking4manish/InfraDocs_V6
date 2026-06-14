@@ -190,6 +190,11 @@ def correlate(
 
     for c in by_cat.get("docker_container", []):
         meta = c["metadata"]
+        running = bool(
+            meta.get("running")
+            or (c.get("health_indicators") or {}).get("running")
+            or c.get("status") == "running"
+        )
         compose_proj = meta.get("compose_project")
         app_name = _route(c["project"], compose_proj=compose_proj)
         container_to_app[c["name"]] = app_name
@@ -207,7 +212,7 @@ def correlate(
             {
                 "name": c["name"],
                 "image": meta.get("image"),
-                "running": bool(meta.get("running")),
+                "running": running,
                 "restarts": meta.get("restarts", 0),
                 "restart_policy": rp_name,
                 "has_health_check": bool(
@@ -219,7 +224,7 @@ def correlate(
             }
         )
 
-        if not meta.get("running") and rp_name in ("always", "unless-stopped"):
+        if not running and rp_name in ("always", "unless-stopped"):
             app["hygiene"]["exited_restart_always"].append(c["name"])
 
         seen_mappings = {
