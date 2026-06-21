@@ -5,7 +5,7 @@ export default function ProjectCard({ project }) {
   return (
     <Link
       to={`/projects/${encodeURIComponent(project.name)}`}
-      className="block bg-bg-card border border-bg-hover rounded-lg p-4 hover:border-accent transition"
+      className="block neon-panel neon-panel-hover rounded-lg p-4 transition"
     >
       <div className="flex items-start justify-between mb-2">
         <h3 className="font-semibold text-base">{project.name}</h3>

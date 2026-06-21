@@ -33,10 +33,8 @@ export default function AppCard({ app, active = false }) {
     <Link
       to={`/applications/${encodeURIComponent(app.name)}`}
       className={cn(
-        "group block bg-bg-card border rounded-lg p-4 transition",
-        active
-          ? "border-accent ring-1 ring-accent/40"
-          : "border-bg-hover hover:border-slate-600",
+        "group block neon-panel neon-panel-hover rounded-lg p-4 transition",
+        active && "ring-1 ring-accent/50",
         !hasRuntime && "opacity-80"
       )}
     >
