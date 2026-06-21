@@ -71,7 +71,7 @@ function Panel({ title, to, linkLabel = "View all", children, className }) {
   return (
     <div
       className={cn(
-        "bg-bg-card border border-bg-hover rounded-2xl p-5",
+        "neon-panel rounded-2xl p-5",
         className
       )}
     >
@@ -91,11 +91,11 @@ function Panel({ title, to, linkLabel = "View all", children, className }) {
   );
 }
 
-function Kpi({ icon: Icon, label, value, sub, to, tone = "#8b5cf6" }) {
+function Kpi({ icon: Icon, label, value, sub, to, tone = "#00ED64" }) {
   return (
     <Link
       to={to}
-      className="group bg-bg-card border border-bg-hover rounded-2xl p-4 hover:border-accent/60 hover:bg-bg-elev transition flex items-start gap-3"
+      className="group neon-panel neon-panel-hover rounded-2xl p-4 hover:bg-bg-elev transition flex items-start gap-3"
     >
       <span
         className="w-10 h-10 rounded-xl grid place-items-center shrink-0"
@@ -262,7 +262,7 @@ export default function Dashboard() {
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         <Kpi
           icon={AppWindow}
-          tone="#8b5cf6"
+          tone="#00ED64"
           label="Applications"
           value={apps.data?.count ?? "—"}
           sub={`${projectAppCount} projects · System`}
@@ -278,7 +278,7 @@ export default function Dashboard() {
         />
         <Kpi
           icon={Layers}
-          tone="#378ADD"
+          tone="#34d8e8"
           label="Assets"
           value={totalAssets || "—"}
           sub={`${cats.length} categories`}
@@ -302,7 +302,7 @@ export default function Dashboard() {
         />
         <Kpi
           icon={RefreshCw}
-          tone={lastScan?.status === "failed" ? "#f43f5e" : "#1D9E75"}
+          tone={lastScan?.status === "failed" ? "#ef4444" : "#1D9E75"}
           label="Last scan"
           value={lastScan?.total_assets ?? "—"}
           sub={

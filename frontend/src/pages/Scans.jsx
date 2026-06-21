@@ -33,7 +33,7 @@ export default function Scans() {
         <button
           onClick={() => trigger.mutate()}
           disabled={trigger.isPending}
-          className="bg-accent hover:bg-accent-dim disabled:opacity-50 text-white text-sm px-3 py-1.5 rounded"
+          className="bg-accent hover:bg-accent-dim disabled:opacity-50 text-bg-base font-semibold text-sm px-3 py-1.5 rounded"
         >
           {trigger.isPending ? "Queueing…" : "Run scan"}
         </button>
