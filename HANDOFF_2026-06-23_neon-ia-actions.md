@@ -4,6 +4,23 @@
 > session, all committed + verified. **Nothing is deployed to prod yet** — see Deploy.
 > Repo `/home/msinha/projects/InfraDocs_V6` (OCI, user `msinha`).
 
+## LATEST (end of 2026-06-23) — visible restructure + the cache fix
+- `52d245f` — **Master-detail split-pane for Applications** (the visible restructure):
+  list left / live detail right, selection in `?sel=` (list never remounts),
+  responsive stack on mobile, `/applications/<name>` redirects into `?sel=`.
+  DEPLOYED (frontend build) + verified in the live bundle.
+- `6ba8177` — **nginx cache fix (NOT applied — needs you)**. Found the real reason
+  "I don't see changes": `index.html` was served with **no Cache-Control**, so the
+  browser cached the old entrypoint → old bundle. Fixed in
+  `deploy/infra.ocialwaysfree.site.conf` (no-cache on index.html; immutable on the
+  real `/static/` path). The auto-mode guard blocked me from touching live nginx.
+  **Apply it (e.g. during the morning restart):**
+  ```
+  sudo cp deploy/infra.ocialwaysfree.site.conf /etc/nginx/sites-available/infra.ocialwaysfree.site
+  sudo nginx -t && sudo systemctl reload nginx
+  ```
+  Until applied, **hard-refresh (Ctrl/Cmd+Shift+R) or use Incognito** to see today's work.
+
 ## What shipped (commits, oldest→newest)
 - `075a7cf … 3c8d182` — **MXH Neon-Depth theme** (tokens + global depth CSS + shared
   components + page sweep). MongoDB-green #00ED64 signal, slate-navy canvas, strain
