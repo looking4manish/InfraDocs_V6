@@ -1,8 +1,9 @@
-import { useParams, Link } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { endpoints } from "../api/client";
 import HealthBadge from "../components/HealthBadge";
 import AssetRow from "../components/AssetRow";
+import Breadcrumbs from "../components/Breadcrumbs";
 
 export default function ProjectDetail() {
   const { name } = useParams();
@@ -15,10 +16,14 @@ export default function ProjectDetail() {
     <div>
       <div className="flex items-center justify-between mb-4">
         <div>
-          <Link to="/projects" className="text-xs text-slate-400 hover:text-accent">
-            ← All projects
-          </Link>
-          <h1 className="text-xl font-semibold">{name}</h1>
+          <Breadcrumbs
+            items={[
+              { label: "Home", to: "/" },
+              { label: "Projects", to: "/projects" },
+              { label: name },
+            ]}
+          />
+          <h1 className="text-xl font-semibold mt-1">{name}</h1>
         </div>
         {q.data && <HealthBadge score={q.data.health_score} />}
       </div>

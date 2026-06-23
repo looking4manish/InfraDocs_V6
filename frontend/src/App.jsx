@@ -1,9 +1,8 @@
-import { BrowserRouter, Route, Routes, Outlet, useLocation } from "react-router-dom";
+import { BrowserRouter, Route, Routes, Outlet, Navigate, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import Header from "./components/Header";
 import DrawerProvider from "./components/DrawerProvider";
 import CommandPalette from "./components/CommandPalette";
-import Dashboard from "./pages/Dashboard";
 import LensHome from "./pages/LensHome";
 import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
@@ -48,7 +47,8 @@ export default function App() {
         <Routes>
           <Route element={<AppShell />}>
             <Route path="/" element={<LensHome />} />
-            <Route path="/dashboard" element={<Dashboard />} />
+            {/* Dashboard now lives as a lens on "/"; keep the old path deep-linkable. */}
+            <Route path="/dashboard" element={<Navigate to="/" replace />} />
             <Route path="/applications" element={<Applications />} />
             <Route path="/applications/:name" element={<ApplicationPanel />} />
             <Route path="/projects" element={<Projects />} />

@@ -1,6 +1,6 @@
-import { useState, useMemo } from "react";
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { motion, AnimatePresence, useReducedMotion } from "motion/react";
 import { Container, Cog, Globe, HardDrive, Package } from "lucide-react";
 import ActionButton from "../components/ActionButton";
@@ -215,7 +215,15 @@ function Fact({ k, v, mono }) {
 }
 
 export default function LensHome() {
-  const [lens, setLens] = useState("Dashboard");
+  const [params, setParams] = useSearchParams();
+  const lens = LENSES.includes(params.get("lens")) ? params.get("lens") : "Dashboard";
+  const setLens = (l) =>
+    setParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (l === "Dashboard") next.delete("lens");
+      else next.set("lens", l);
+      return next;
+    });
   const reduce = useReducedMotion();
   const navigate = useNavigate();
   const q = useQuery({

@@ -5,6 +5,7 @@ import { formatBytes } from "../components/Bytes";
 import ActionButton from "../components/ActionButton";
 import StatePill from "../components/StatePill";
 import TopologyLane from "../components/TopologyLane";
+import Breadcrumbs from "../components/Breadcrumbs";
 
 function Section({ title, count, children, right }) {
   return (
@@ -159,9 +160,13 @@ export default function ApplicationDetail() {
     <div>
       <div className="flex items-center justify-between mb-4">
         <div>
-          <Link to="/" className="text-xs text-slate-400 hover:text-accent">
-            ← All applications
-          </Link>
+          <Breadcrumbs
+            items={[
+              { label: "Home", to: "/" },
+              { label: isSystem ? "System" : "Applications", to: "/applications" },
+              { label: name },
+            ]}
+          />
           <div className="flex items-center gap-2 mt-1">
             <h1 className="text-xl font-semibold">{name}</h1>
             {app && (

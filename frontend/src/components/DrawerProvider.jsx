@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "motion/react";
 import {
@@ -190,16 +191,58 @@ function AssetBody({ id }) {
   );
 }
 
+// Serialize a drawer target into the `?d=` URL token, and back. This makes
+// every drawer deep-linkable, shareable, and closeable via the browser Back
+// button. Rich fields (label) are kept in component state when available;
+// a cold deep-link reconstructs a minimal target the bodies can still load.
+function targetToToken(t) {
+  if (!t) return null;
+  return t.type === "application" ? `app:${t.name}` : `asset:${t.id}`;
+}
+function tokenToTarget(token) {
+  if (!token) return null;
+  const i = token.indexOf(":");
+  if (i < 0) return null;
+  const kind = token.slice(0, i);
+  const val = token.slice(i + 1);
+  if (kind === "app") return { type: "application", name: val };
+  if (kind === "asset") return { type: "asset", id: val, label: val };
+  return null;
+}
+
 export default function DrawerProvider({ children }) {
-  const [target, setTarget] = useState(null);
-  const openDrawer = useCallback((t) => setTarget(t), []);
-  const closeDrawer = useCallback(() => setTarget(null), []);
+  const [params, setParams] = useSearchParams();
+  // `rich` holds the in-memory target (with label etc.) set by openDrawer.
+  const [rich, setRich] = useState(null);
+  const token = params.get("d");
+  // Effective target is derived in render: prefer the rich target when it still
+  // matches the URL token; otherwise reconstruct a minimal one from the token
+  // (cold deep-link or Back/Forward). Pure derivation — no effect, no cascade.
+  const target = targetToToken(rich) === token ? rich : tokenToTarget(token);
+
+  const openDrawer = useCallback((t) => {
+    setRich(t);
+    setParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set("d", targetToToken(t));
+      return next;
+    });
+  }, [setParams]);
+
+  const closeDrawer = useCallback(() => {
+    setRich(null);
+    setParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("d");
+      return next;
+    });
+  }, [setParams]);
 
   useEffect(() => {
-    const onKey = (e) => { if (e.key === "Escape") setTarget(null); };
+    const onKey = (e) => { if (e.key === "Escape") closeDrawer(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [closeDrawer]);
 
   return (
     <DrawerCtx.Provider value={{ openDrawer, closeDrawer }}>

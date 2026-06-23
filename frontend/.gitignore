@@ -25,3 +25,5 @@ dist-ssr
 
 # Neon-Depth theme backups
 *.bak.neon
+*.bak.ia
+dist_preview/
