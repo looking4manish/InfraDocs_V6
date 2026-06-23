@@ -233,7 +233,7 @@ export default function LensHome() {
 
   const all = q.data?.applications || [];
   const projects = all.filter((a) => a.type === "project");
-  const open = (name) => navigate(`/applications/${encodeURIComponent(name)}`);
+  const open = (name) => navigate(`/applications?sel=${encodeURIComponent(name)}`);
 
   return (
     <div>

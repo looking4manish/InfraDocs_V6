@@ -1,4 +1,4 @@
-import { BrowserRouter, Route, Routes, Outlet, Navigate, useLocation } from "react-router-dom";
+import { BrowserRouter, Route, Routes, Outlet, Navigate, useParams, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
 import Header from "./components/Header";
 import DrawerProvider from "./components/DrawerProvider";
@@ -7,12 +7,18 @@ import LensHome from "./pages/LensHome";
 import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
 import Applications from "./pages/Applications";
-import ApplicationPanel from "./pages/ApplicationPanel";
 import Assets from "./pages/Assets";
 import Ports from "./pages/Ports";
 import Storage from "./pages/Storage";
 import Actions from "./pages/Actions";
 import Scans from "./pages/Scans";
+
+// Old detail links (/applications/<name>) fold into the master-detail split view,
+// which carries the selection in ?sel= so the list stays mounted.
+function AppDetailRedirect() {
+  const { name } = useParams();
+  return <Navigate to={`/applications?sel=${encodeURIComponent(name)}`} replace />;
+}
 
 function AppShell() {
   const location = useLocation();
@@ -50,7 +56,7 @@ export default function App() {
             {/* Dashboard now lives as a lens on "/"; keep the old path deep-linkable. */}
             <Route path="/dashboard" element={<Navigate to="/" replace />} />
             <Route path="/applications" element={<Applications />} />
-            <Route path="/applications/:name" element={<ApplicationPanel />} />
+            <Route path="/applications/:name" element={<AppDetailRedirect />} />
             <Route path="/projects" element={<Projects />} />
             <Route path="/projects/:name" element={<ProjectDetail />} />
             <Route path="/assets" element={<Assets />} />

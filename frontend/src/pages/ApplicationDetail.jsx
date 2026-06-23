@@ -138,8 +138,9 @@ function SystemdRow({ name }) {
   );
 }
 
-export default function ApplicationDetail() {
-  const { name } = useParams();
+export default function ApplicationDetail({ name: nameProp }) {
+  const params = useParams();
+  const name = nameProp ?? params.name;
   const q = useQuery({
     queryKey: ["application", name],
     queryFn: () => endpoints.getApplication(name).then((r) => r.data),
