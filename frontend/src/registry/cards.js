@@ -26,6 +26,8 @@ export const ACTION_META = {
   prune:    { label: "Prune",    icon: "Trash2" },
   recreate: { label: "Recreate", icon: "RefreshCcw" },
   trigger:  { label: "Run now",  icon: "PlayCircle" },
+  update:       { label: "Update",       icon: "ArrowUpCircle" },
+  check_update: { label: "Check update", icon: "RefreshCw" },
 };
 
 // Per-category presentation. `fields` lists what an entity card shows.
@@ -41,7 +43,7 @@ export const CARD_REGISTRY = {
       { key: "running", label: "state", fmt: "running" },
     ],
     // Preferred display order; intersected with backend-allowed at render time.
-    actions: ["logs", "inspect", "stats", "restart", "stop", "start"],
+    actions: ["logs", "inspect", "stats", "check_update", "restart", "stop", "start"],
     primary: "logs",
   },
   docker_compose: {
@@ -50,8 +52,8 @@ export const CARD_REGISTRY = {
     shape: "entity",
     accent: "violet",
     fields: [{ key: "file_path", label: "file" }],
-    actions: ["up", "restart", "recreate", "down"],
-    primary: "up",
+    actions: ["update", "up", "restart", "recreate", "down"],
+    primary: "update",
   },
   systemd_service: {
     icon: "Cog",
@@ -92,8 +94,8 @@ export const CARD_REGISTRY = {
       { key: "tags", label: "tags" },
       { key: "is_dangling", label: "dangling" },
     ],
-    actions: ["pull", "prune"],
-    primary: "pull",
+    actions: ["check_update", "pull", "prune"],
+    primary: "check_update",
   },
   // Non-actionable shapes (no backend actions; render read-only).
   network_port: { icon: "Plug", label: "Port", shape: "flow_node", accent: "violet",

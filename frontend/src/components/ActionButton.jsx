@@ -18,14 +18,15 @@ import {
   ToggleRight,
   ToggleLeft,
   Download,
+  ArrowUpCircle,
 } from "lucide-react";
 
 const MUTATING = new Set([
-  "start", "stop", "restart", "up", "down", "reload",
+  "start", "stop", "restart", "up", "down", "reload", "update",
 ]);
 
 // Actions whose result is mainly stdout text — show output inline after success.
-const TEXT_OUTPUT = new Set(["logs", "status", "test"]);
+const TEXT_OUTPUT = new Set(["logs", "status", "test", "check_update"]);
 
 // Per-action icon, theme-matched. Unknown actions render no icon (safe fallback).
 const ICONS = {
@@ -43,6 +44,8 @@ const ICONS = {
   enable: ToggleRight,
   disable: ToggleLeft,
   pull: Download,
+  update: ArrowUpCircle,
+  check_update: RefreshCw,
 };
 
 export default function ActionButton({

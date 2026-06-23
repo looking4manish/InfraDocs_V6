@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { endpoints } from "../api/client";
 import { cn } from "../lib/cn";
+import ActionBar from "./ActionBar";
 
 const DrawerCtx = createContext({ openDrawer: () => {}, closeDrawer: () => {} });
 export const useDrawer = () => useContext(DrawerCtx);
@@ -84,14 +85,19 @@ function ApplicationBody({ name }) {
         <Section title="containers">
           <div className="space-y-1.5">
             {a.containers_detail.map((c) => (
-              <Row key={c.name}>
-                <CircleDot size={13} className={c.running ? "text-emerald-400" : "text-red-400"} />
-                <span className="font-mono text-zinc-200 truncate">{c.name}</span>
-                <span className="ml-auto flex items-center gap-1.5">
-                  {c.restart_policy && <Pill>{c.restart_policy}</Pill>}
-                  {(c.host_ports || []).map((p) => <Pill key={p} tone="violet">:{p}</Pill>)}
-                </span>
-              </Row>
+              <div key={c.name} className="rounded-lg bg-bg-card border border-bg-hover/60 px-3 py-2">
+                <div className="flex items-center gap-2.5 text-[13px]">
+                  <CircleDot size={13} className={c.running ? "text-emerald-400" : "text-red-400"} />
+                  <span className="font-mono text-zinc-200 truncate">{c.name}</span>
+                  <span className="ml-auto flex items-center gap-1.5 shrink-0">
+                    {c.restart_policy && <Pill>{c.restart_policy}</Pill>}
+                    {(c.host_ports || []).map((p) => <Pill key={p} tone="violet">:{p}</Pill>)}
+                  </span>
+                </div>
+                <div className="mt-2">
+                  <ActionBar entity={{ category: "docker_container", name: c.name, resolveByName: true }} size="xs" />
+                </div>
+              </div>
             ))}
           </div>
         </Section>
@@ -181,6 +187,12 @@ function AssetBody({ id }) {
       <div className="flex flex-wrap items-center gap-2 mt-1">
         <Pill tone="violet">{a.category}</Pill>
         {a.project && <Pill>{a.project}</Pill>}
+      </div>
+      <div className="mt-3">
+        <ActionBar
+          entity={{ category: a.category, asset_id: a.asset_id || id, name: a.name }}
+          size="sm"
+        />
       </div>
       <Section title="metadata">
         <pre className="text-[11.5px] leading-relaxed font-mono text-zinc-400 bg-bg-card border border-bg-hover/60 rounded-lg p-3 overflow-x-auto">
