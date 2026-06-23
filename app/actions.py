@@ -35,13 +35,15 @@ from docker.errors import APIError, DockerException, NotFound
 # ALLOWED_ACTIONS is derived below so existing consumers keep working unchanged.
 ACTION_REGISTRY: Dict[str, Dict[str, Any]] = {
     "docker_container": {
-        "allowed": {"start", "stop", "restart", "logs", "inspect", "stats"},
+        # check_update is read-only (queries the registry); never destructive.
+        "allowed": {"start", "stop", "restart", "logs", "inspect", "stats", "check_update"},
         "destructive": {"stop", "restart"},
         "self_protect": True,
     },
     "docker_compose": {
-        "allowed": {"up", "down", "restart", "recreate"},
-        "destructive": {"down", "restart", "recreate"},
+        # update = pull newer images + recreate (the real "upgrade this app").
+        "allowed": {"up", "down", "restart", "recreate", "update"},
+        "destructive": {"down", "restart", "recreate", "update"},
         "self_protect": True,
     },
     "systemd_service": {
@@ -60,7 +62,7 @@ ACTION_REGISTRY: Dict[str, Dict[str, Any]] = {
         "self_protect": False,
     },
     "docker_image": {
-        "allowed": {"pull", "prune"},
+        "allowed": {"pull", "prune", "check_update"},
         "destructive": {"prune"},
         "self_protect": False,
     },
@@ -122,6 +124,62 @@ def _docker_client():
         raise ActionError(f"docker daemon unreachable: {e}")
 
 
+def _check_image_update(client, ref: Optional[str]) -> ActionResult:
+    """Compare the locally-pulled image digest against the registry's current
+    digest for the same tag. Read-only: one anonymous registry lookup, no pull.
+
+    `details.update_available` is True/False, or None when it can't be decided
+    (e.g. registry unreachable, or the local image wasn't pulled by digest).
+    """
+    if not ref or ref == "<none>":
+        raise ActionError("no image tag to check (image is untagged/dangling)")
+    # Remote: canonical manifest digest for this tag, straight from the registry.
+    try:
+        remote = client.images.get_registry_data(ref).id
+    except (APIError, DockerException, NotFound) as e:
+        return ActionResult(
+            status="failed",
+            stderr=f"registry lookup failed for {ref}: {e}",
+            details={"update_available": None, "ref": ref},
+        )
+    # Local: the digest the running image was pulled at (RepoDigests).
+    local_digest = None
+    try:
+        attrs = client.images.get(ref).attrs
+        for d in attrs.get("RepoDigests") or []:
+            if "@" in d:
+                local_digest = d.split("@", 1)[1]
+                break
+    except (APIError, DockerException, NotFound):
+        pass
+
+    if local_digest is None:
+        update_available = None
+        verdict = "local digest unknown (image not pulled by digest) — cannot compare"
+    else:
+        update_available = remote != local_digest
+        verdict = (
+            "UPDATE AVAILABLE — run `update` to pull + recreate"
+            if update_available else "up to date"
+        )
+    summary = (
+        f"{ref}\n"
+        f"local:  {local_digest or 'unknown'}\n"
+        f"remote: {remote}\n\n"
+        f"{verdict}"
+    )
+    return ActionResult(
+        status="success",
+        stdout=summary,
+        details={
+            "update_available": update_available,
+            "ref": ref,
+            "local": local_digest,
+            "remote": remote,
+        },
+    )
+
+
 def _act_docker_container(
     asset: Dict[str, Any], action: str, args: Dict[str, Any]
 ) -> ActionResult:
@@ -167,6 +225,12 @@ def _act_docker_container(
             stdout=_json.dumps(st, indent=2, default=str),
             details={"read": st.get("read")},
         )
+    if action == "check_update":
+        img = getattr(container, "image", None)
+        ref = (getattr(img, "tags", None) or [None])[0] if img else None
+        if not ref:
+            ref = asset.get("metadata", {}).get("image")
+        return _check_image_update(client, ref)
     raise ActionNotAllowed(action)
 
 
@@ -180,6 +244,21 @@ def _act_docker_compose(
     file_path = asset.get("metadata", {}).get("file_path")
     if not file_path:
         raise ActionError("compose file path missing")
+
+    # update = pull newer images, then recreate onto them. This is the real
+    # "upgrade this app": `recreate` alone reuses the local image and never pulls.
+    if action == "update":
+        pull = _run_subprocess(
+            ["docker", "compose", "-f", file_path, "pull"], timeout=600
+        )
+        if pull.status != "success":
+            return pull
+        up = _run_subprocess(
+            ["docker", "compose", "-f", file_path, "up", "-d"], timeout=600
+        )
+        up.stdout = (f"$ docker compose pull\n{pull.stdout}\n"
+                     f"$ docker compose up -d\n{up.stdout}").strip()
+        return up
 
     sub = {"up": ["up", "-d"], "down": ["down"], "restart": ["restart"], "recreate": ["up", "-d", "--force-recreate"]}.get(action)
     if sub is None:
@@ -258,6 +337,9 @@ def _act_docker_image(
         return ActionResult(status="success", stdout=f"pulled {ref}")
     if action == "prune":
         return _run_subprocess(["docker", "image", "prune", "-f"], timeout=60)
+    if action == "check_update":
+        ref = (asset.get("metadata", {}).get("tags") or [asset.get("name")])[0]
+        return _check_image_update(client, ref)
     raise ActionNotAllowed(action)
 
 

@@ -225,6 +225,9 @@ class DockerScanner(BaseScanner):
                         metadata={
                             "image_id": img.id[:19],
                             "tags": tags,
+                            # Registry digests the image was pulled at — the local
+                            # reference for "is there a newer image?" comparisons.
+                            "repo_digests": img.attrs.get("RepoDigests", []),
                             "size_mb": round(img.attrs.get("Size", 0) / 1024 / 1024, 2),
                             "created": img.attrs.get("Created"),
                             "architecture": img.attrs.get("Architecture"),

@@ -281,7 +281,11 @@ def test_list_allowed(client):
     r = client.get("/api/actions/allowed", auth=AUTH)
     body = r.json()
     assert "allowed" in body
-    assert set(body["allowed"]["docker_container"]) == {"start", "stop", "restart", "logs"}
+    # Resilient superset checks (the exact set grows as actions are added).
+    container = set(body["allowed"]["docker_container"])
+    assert {"start", "stop", "restart", "logs"} <= container
+    assert "check_update" in container
+    assert "update" in set(body["allowed"]["docker_compose"])
 
 
 def test_actions_auth_required(client):

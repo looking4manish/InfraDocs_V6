@@ -70,11 +70,11 @@ def test_storage_mount_has_no_actions():
 
 def test_allowed_actions_is_complete():
     """Snapshot test so adding new actions is intentional."""
-    assert ALLOWED_ACTIONS["docker_container"] == {"start", "stop", "restart", "logs", "inspect", "stats"}
+    assert ALLOWED_ACTIONS["docker_container"] == {"start", "stop", "restart", "logs", "inspect", "stats", "check_update"}
     assert ALLOWED_ACTIONS["systemd_service"] == {"start", "stop", "restart", "logs", "status", "enable", "disable"}
     assert ALLOWED_ACTIONS["nginx_server_block"] == {"test", "reload"}
-    assert ALLOWED_ACTIONS["docker_image"] == {"pull", "prune"}
-    assert ALLOWED_ACTIONS["docker_compose"] == {"up", "down", "restart", "recreate"}
+    assert ALLOWED_ACTIONS["docker_image"] == {"pull", "prune", "check_update"}
+    assert ALLOWED_ACTIONS["docker_compose"] == {"up", "down", "restart", "recreate", "update"}
     assert ALLOWED_ACTIONS["systemd_timer"] == {"start", "stop", "restart", "status", "enable", "disable", "trigger"}
     assert ALLOWED_ACTIONS["docker_volume"] == {"inspect", "prune"}
     assert ALLOWED_ACTIONS["storage_mount"] == {"inspect"}
@@ -339,3 +339,87 @@ def test_storage_mount_inspect_runs():
         rs.return_value = ActionResult(status="success")
         dispatch(asset, "inspect")
     assert rs.call_args[0][0][0] == "findmnt"
+
+
+# ----------------------- update flow (image upgrade) ------------------------
+
+
+def test_compose_update_pulls_then_recreates():
+    """update = `compose pull` followed by `compose up -d` (recreate alone never pulls)."""
+    asset = {"category": "docker_compose", "name": "openwebui", "asset_id": "1",
+             "metadata": {"file_path": "/x/docker-compose.yml"}}
+    with patch("app.actions._run_subprocess") as rs:
+        rs.side_effect = [
+            ActionResult(status="success", stdout="pulled newer image"),
+            ActionResult(status="success", stdout="recreated openwebui"),
+        ]
+        result = dispatch(asset, "update")
+    assert rs.call_count == 2
+    assert rs.call_args_list[0].args[0][-1] == "pull"
+    assert rs.call_args_list[1].args[0][-2:] == ["up", "-d"]
+    assert result.status == "success"
+    assert "pulled newer image" in result.stdout and "recreated openwebui" in result.stdout
+
+
+def test_compose_update_aborts_if_pull_fails():
+    """A failed pull must NOT proceed to recreate (don't bounce the app for nothing)."""
+    asset = {"category": "docker_compose", "name": "x", "asset_id": "1",
+             "metadata": {"file_path": "/x/docker-compose.yml"}}
+    with patch("app.actions._run_subprocess") as rs:
+        rs.side_effect = [
+            ActionResult(status="failed", stderr="pull: manifest unknown"),
+            ActionResult(status="success", stdout="should not run"),
+        ]
+        result = dispatch(asset, "update")
+    assert rs.call_count == 1  # stopped after the failed pull
+    assert result.status == "failed"
+
+
+def _image_asset(ref="ghcr.io/open-webui/open-webui:latest"):
+    return {"category": "docker_image", "name": ref, "asset_id": "oci:image:1",
+            "metadata": {"tags": [ref]}}
+
+
+def test_check_update_flags_when_digests_differ():
+    client = MagicMock()
+    client.images.get_registry_data.return_value.id = "sha256:REMOTE_NEW"
+    client.images.get.return_value.attrs = {"RepoDigests": ["repo@sha256:LOCAL_OLD"]}
+    with patch("app.actions._docker_client", return_value=client):
+        result = dispatch(_image_asset(), "check_update")
+    assert result.status == "success"
+    assert result.details["update_available"] is True
+    assert "UPDATE AVAILABLE" in result.stdout
+
+
+def test_check_update_clears_when_digests_match():
+    client = MagicMock()
+    client.images.get_registry_data.return_value.id = "sha256:SAME"
+    client.images.get.return_value.attrs = {"RepoDigests": ["repo@sha256:SAME"]}
+    with patch("app.actions._docker_client", return_value=client):
+        result = dispatch(_image_asset(), "check_update")
+    assert result.details["update_available"] is False
+    assert "up to date" in result.stdout
+
+
+def test_check_update_unknown_when_no_local_digest():
+    client = MagicMock()
+    client.images.get_registry_data.return_value.id = "sha256:REMOTE"
+    client.images.get.return_value.attrs = {"RepoDigests": []}
+    with patch("app.actions._docker_client", return_value=client):
+        result = dispatch(_image_asset(), "check_update")
+    assert result.details["update_available"] is None
+
+
+def test_container_check_update_uses_running_image_tag():
+    container = MagicMock()
+    container.image.tags = ["ghcr.io/open-webui/open-webui:latest"]
+    client = MagicMock()
+    client.containers.get.return_value = container
+    client.images.get_registry_data.return_value.id = "sha256:REMOTE_NEW"
+    client.images.get.return_value.attrs = {"RepoDigests": ["repo@sha256:LOCAL_OLD"]}
+    with patch("app.actions._docker_client", return_value=client):
+        result = dispatch(_container_asset(), "check_update")
+    assert result.details["update_available"] is True
+    client.images.get_registry_data.assert_called_once_with(
+        "ghcr.io/open-webui/open-webui:latest"
+    )

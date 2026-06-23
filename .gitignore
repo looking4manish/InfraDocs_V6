@@ -43,3 +43,4 @@ dist/
 *.bak.v7-*
 frontend/dist.bak.*/
 frontend/dist/
+*.bak.upd
