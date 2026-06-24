@@ -69,6 +69,8 @@ def _empty_app(name: str, *, source: Optional[str], type_: str) -> Dict[str, Any
         "links": [],
         "containers_detail": [],
         "nginx_detail": [],
+        "certificates": [],
+        "certificates_detail": [],
         "hygiene": {
             "exited_restart_always": [],
             "dangling_images": [],
@@ -330,6 +332,7 @@ def correlate(
         )
 
     # ---- Pass 6: nginx blocks ---------------------------------------------
+    domain_to_app: Dict[str, str] = {}  # server_name -> owning app (for cert linking)
     for ng in by_cat.get("nginx_server_block", []):
         meta = ng["metadata"]
         upstream_port = meta.get("upstream_port")
@@ -340,6 +343,7 @@ def correlate(
             app_name = _route(ng["project"])
             via = "project_tag"
         app = apps[app_name]
+        domain_to_app[ng["name"]] = app_name
         app["nginx_sites"].append(ng["name"])
         _link(app, "nginx_server_block", ng["name"], "application", app_name, via, 6)
         app["nginx_detail"].append(
@@ -364,6 +368,33 @@ def correlate(
             app["internet_exposed"] = True
         if meta.get("cloudflare_origin"):
             app["cloudflare"] = True
+
+    # ---- Pass 6b: TLS certificates → the app whose domain(s) they secure ---
+    for cert in by_cat.get("tls_certificate", []):
+        cmeta = cert["metadata"]
+        domains = cmeta.get("domains") or [cert["name"]]
+        linked = {domain_to_app[d] for d in domains if d in domain_to_app}
+        if not linked:
+            # No nginx domain match — fall back to the cert's own attribution.
+            fallback = _route(cert.get("project") or SYSTEM_BUCKET)
+            if fallback != SYSTEM_BUCKET:
+                linked = {fallback}
+        for app_name in linked:
+            app = apps[app_name]
+            if cert["name"] in app["certificates"]:
+                continue
+            app["certificates"].append(cert["name"])
+            app["certificates_detail"].append({
+                "name": cert["name"],
+                "domains": domains,
+                "not_after": cmeta.get("not_after"),
+                "days_until_expiry": cmeta.get("days_until_expiry"),
+                "issuer": cmeta.get("issuer"),
+                "status": cert.get("status"),
+                "cert_path": cmeta.get("cert_path"),
+            })
+            _link(app, "tls_certificate", cert["name"], "application", app_name,
+                  "nginx_domain", 6)
 
     # ---- Pass 7: systemd services + timers --------------------------------
     for s in by_cat.get("systemd_service", []) + by_cat.get("systemd_timer", []):

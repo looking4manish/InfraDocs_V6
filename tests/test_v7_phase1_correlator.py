@@ -49,6 +49,29 @@ def test_container_link_via_compose_label(tmp_path):
     } in links
 
 
+def test_cert_links_to_app_via_nginx_domain(tmp_path):
+    """A TLS cert is linked to the app whose nginx block serves its domain."""
+    assets = [
+        _asset("nginx_server_block", "web.example.com", "web",
+               {"server_name": "web.example.com", "url": "https://web.example.com"}),
+        _asset("tls_certificate", "web.example.com", "System",
+               {"domains": ["web.example.com"],
+                "cert_path": "/etc/letsencrypt/live/web.example.com/fullchain.pem",
+                "not_after": "Aug 21 16:57:06 2099 GMT",
+                "days_until_expiry": 200, "issuer": "LE"},
+               status="valid"),
+    ]
+    apps = _run(assets, tmp_path)
+    web = apps["web"]
+    assert "web.example.com" in web["certificates"]
+    assert any(c["name"] == "web.example.com" for c in web["certificates_detail"])
+    assert {
+        "src_kind": "tls_certificate", "src": "web.example.com",
+        "dst_kind": "application", "dst": "web",
+        "via": "nginx_domain", "pass": 6,
+    } in web["links"]
+
+
 def test_container_link_via_project_dir_when_no_label(tmp_path):
     assets = [_asset("docker_container", "solo", "web", {"running": True})]
     apps = _run(assets, tmp_path)
