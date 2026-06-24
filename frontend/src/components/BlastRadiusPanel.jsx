@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { endpoints } from "../api/client";
 import { cn } from "../lib/cn";
+import KillButton from "./KillButton";
 
 const CAT_ICON = {
   docker_container: Box,
@@ -122,9 +123,10 @@ export default function BlastRadiusPanel({ name }) {
               </div>
 
               <div className="text-[11px] text-zinc-600 mt-3">
-                Preview only — no teardown action exists yet. Red = removal destroys
-                data · amber = shared with another app (must not be removed).
+                Red = removal destroys data · amber = shared with another app (skipped, never removed).
               </div>
+
+              {data.type === "project" && <KillButton name={name} />}
             </>
           )}
         </div>
