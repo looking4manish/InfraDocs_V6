@@ -33,6 +33,7 @@ scanning:
     - port
     - nginx
     - storage
+    - cron
 
 logging:
   level: INFO
