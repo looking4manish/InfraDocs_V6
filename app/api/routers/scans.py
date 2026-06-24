@@ -11,8 +11,10 @@ from app.api.dependencies import get_config, get_db, verify_auth
 from app.core.config_loader import Config
 from app.core.db_manager import DBManager
 from app.core.project_detector import ProjectDetector
-from app.correlator import correlate
+from app.correlator import SYSTEM_BUCKET, correlate
+from app.ports_registry import build_ports_registry
 from app.scanners.registry import SCANNERS
+from app.storage_registry import build_storage_registry
 
 router = APIRouter()
 
@@ -71,6 +73,17 @@ def _run_scan_job(scan_id: str, cfg: Config):
         projects_root=cfg.paths.projects_root,
     )
     apps_written = db.replace_applications(applications)
+
+    # Ports + storage registries — the UI "Scan now" was leaving these stale
+    # (only the CLI agent built them), so storage/ports summaries read 0.
+    valid_projects = pd.list_projects() + [SYSTEM_BUCKET]
+    db.replace_ports(build_ports_registry(
+        all_assets, server_id=cfg.server.id, valid_projects=valid_projects,
+    ))
+    db.replace_storage(build_storage_registry(
+        all_assets, server_id=cfg.server.id,
+        projects_root=cfg.paths.projects_root, valid_projects=valid_projects,
+    ))
 
     finished = datetime.now(timezone.utc)
     db.db.scan_logs.update_one(
