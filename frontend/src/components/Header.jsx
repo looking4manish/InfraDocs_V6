@@ -8,6 +8,7 @@ import {
   computeAttention, freshness, normalizeList, parseScanTime,
 } from "../lib/attention";
 import { useDrawer } from "./DrawerProvider";
+import ThemeSwitcher from "./ThemeSwitcher";
 
 function openPalette() {
   window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true }));
@@ -126,6 +127,8 @@ export default function Header() {
           </>
         )}
       </div>
+
+      <ThemeSwitcher />
 
       <button
         onClick={() => triggerScan.mutate()}

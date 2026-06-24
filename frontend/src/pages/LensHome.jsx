@@ -241,7 +241,7 @@ export default function LensHome() {
         {LENSES.map((l) => (
           <button
             key={l}
-            onClick={() => setLens(l)}
+            onClick={() => (l === "Assets" ? navigate("/assets") : setLens(l))}
             className={cn(
               "px-3 py-1.5 rounded-lg text-[13px] font-medium border transition",
               lens === l
