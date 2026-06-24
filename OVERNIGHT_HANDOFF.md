@@ -45,5 +45,65 @@ one-liner for the morning. (The permission guardrail also blocks autonomous prod
 - Multi-server SSH (later): see memory `multi-server-ssh` — OCI/OCI-P/N150 only;
   N150 user `manishkumarsinha`, key `~/.ssh/master_key`.
 
+## ☀️ MORNING GUIDE (read this first)
+
+### What's running right now
+- **Live site UNTOUCHED**: infra.ocialwaysfree.site still served by the native install
+  (systemd `infradocs-v6-api.service` :8004 + host nginx). I did NOT touch it.
+- **NEW: the dockerized product runs in PARALLEL** on alt ports (no conflict):
+  - web (Caddy + UI):  http 8081 / https 8443
+  - api:               8090   ·   mongo: 27018
+  - bring up/down: `docker compose -f deploy/docker/docker-compose.yml --env-file deploy/docker/.env {up -d|down}`
+  - login: `msinha` / `smoketest123` (test creds in the gitignored deploy/docker/.env)
+
+### A) UAT the dockerized product (before any cutover)
+From your laptop, tunnel to it then browse (self-signed cert on localhost, accept it):
+```
+ssh -i ~/.ssh/master_key -L 8443:localhost:8443 msinha@<OCI>     # OCI = biwi? no, this host
+# then open https://localhost:8443  (login msinha / smoketest123)
+```
+(or, if your laptop is on Tailscale: https://100.107.140.36:8443). Click around —
+it ran a real scan of THIS host from inside the container: all 8 scanners, ~424
+assets, 9 apps, 69 GB storage, the Kill Button, blast radius, etc.
+
+### B) The product itself (for any Ubuntu server / your colleague)
+`deploy/docker/` is a self-contained stack. On a fresh host:
+```
+git clone <repo> && cd <repo>/deploy/docker
+cp .env.example .env      # set DOMAIN=infra.example.com, ADMIN_PASSWORD, SERVER_ID, PROJECTS_ROOT
+docker compose up -d
+```
+With a real DOMAIN, Caddy auto-provisions Let's Encrypt TLS on 443. One image,
+env-driven — deploys anywhere. (Proven: all scanners see the host from the container.)
+
+### C) Cutover on THIS OCI box — two options (your call; do together when up)
+This host's nginx fronts MANY domains (home/dashboard/chat…), so the full-Caddy
+takeover would disrupt the others. Recommended = the MINIMAL cutover:
+
+**C1 — Minimal (recommended): dockerize the backend, keep host nginx as the front.**
+  1. Point the infra vhost's /api at the docker API instead of the native one:
+     edit /etc/nginx/sites-enabled/infra.ocialwaysfree.site → `proxy_pass http://127.0.0.1:8004/api/`
+     becomes `http://127.0.0.1:8090/api/`; `sudo nginx -t && sudo systemctl reload nginx`.
+     (Run the docker stack with API_PORT=8090; the frontend stays served by host nginx.)
+  2. Stop the native API: `sudo systemctl disable --now infradocs-v6-api.service`.
+  → Lowest risk; other sites untouched; backend now dockerized + auto-restart.
+
+**C2 — Full self-contained takeover:** only if you migrate the OTHER domains to the
+  bundled Caddy too (set WEB_PORT=80/WEB_TLS_PORT=443, add their reverse-proxy rules
+  to the Caddyfile, stop host nginx). More work; do deliberately.
+
+Either way, ARCHIVE the native install after: it's just `frontend/dist` + `venv` +
+the systemd unit — keep them aside, nothing is deleted.
+
+### Notes / follow-ups
+- Caddy redirects http→https even for localhost (cosmetic); UAT over :8443.
+- Exposure detectors (caddy/cloudflared) find 0 on OCI (it uses nginx) — they'll
+  light up on N150 (cloudflared). Live-test there once N150 is onboarded.
+- The multi-server (SSH to OCI-P/N150) work is the NEXT phase, not done tonight.
+
 ## Progress log
 - (start) handoff doc created.
+- A: storage containerized-mode, full compose stack (mongo+api+caddy), scan-job
+  registry fix, env-overridable config. Built + deployed parallel + smoke-tested.
+- B: caddy + cloudflared exposure detectors + correlator Pass 6c (unified exposure).
+- Suites green throughout (184). Everything committed + pushed to feature/neon-depth-theme.
