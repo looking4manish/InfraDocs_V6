@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { endpoints } from "../api/client";
 import { formatBytes } from "../components/Bytes";
 import ActionButton from "../components/ActionButton";
+import ActionBar from "../components/ActionBar";
 import StatePill from "../components/StatePill";
 import TopologyLane from "../components/TopologyLane";
 import Breadcrumbs from "../components/Breadcrumbs";
@@ -35,10 +36,12 @@ function KV({ label, value }) {
   );
 }
 
+// Every entity row now drives its actions off the registry (ActionBar) instead of
+// a hardcoded button set — so new actions (check_update, …) appear automatically,
+// and each entity shows exactly the actions the backend allows for its category.
+// The status lookup shares ActionBar's ["asset-by-name", …] query (same key), so
+// there's no duplicate fetch.
 function ContainerRow({ name, port_mapping }) {
-  const assetId = `oci:container:${name}`;
-  // We don't actually have the asset_id without another lookup; use name+lookup via /api/assets.
-  // Instead, look up the container asset to get its real asset_id.
   const q = useQuery({
     queryKey: ["asset-by-name", "docker_container", name],
     queryFn: () =>
@@ -47,46 +50,16 @@ function ContainerRow({ name, port_mapping }) {
         .then((r) => r.data.assets.find((a) => a.name === name)),
   });
   const asset = q.data;
-  const id = asset?.asset_id || assetId;
-  const isSelf = name.startsWith("infradocs-v6-");
-
   return (
-    <div className="flex items-center justify-between py-2 border-b border-bg-hover/40 last:border-0">
+    <div className="flex items-center justify-between gap-3 py-2 border-b border-bg-hover/40 last:border-0">
       <div className="flex items-center gap-3 min-w-0">
         <span className="text-sm text-slate-200 truncate">{name}</span>
         {asset?.status && <StatePill value={asset.status} />}
         {port_mapping && (
-          <span className="text-xs text-slate-500 font-mono">
-            {port_mapping}
-          </span>
+          <span className="text-xs text-slate-500 font-mono">{port_mapping}</span>
         )}
       </div>
-      <div className="flex items-center gap-1">
-        <ActionButton
-          action="logs"
-          fire={() => endpoints.fireAssetAction(id, "logs", { tail: 200 })}
-          label="logs"
-        />
-        <ActionButton
-          action="restart"
-          fire={() => endpoints.fireAssetAction(id, "restart")}
-          disabled={isSelf}
-          disabledReason="Self-protected — would kill the API"
-          invalidateKeys={[["asset-by-name", "docker_container", name]]}
-        />
-        <ActionButton
-          action="stop"
-          fire={() => endpoints.fireAssetAction(id, "stop")}
-          disabled={isSelf}
-          disabledReason="Self-protected — would kill the API"
-          invalidateKeys={[["asset-by-name", "docker_container", name]]}
-        />
-        <ActionButton
-          action="start"
-          fire={() => endpoints.fireAssetAction(id, "start")}
-          invalidateKeys={[["asset-by-name", "docker_container", name]]}
-        />
-      </div>
+      <ActionBar entity={{ category: "docker_container", name, resolveByName: true }} size="sm" />
     </div>
   );
 }
@@ -109,32 +82,44 @@ function SystemdRow({ name }) {
     enabled: q.isSuccess && !q.data,
   });
   const asset = q.data || q2.data;
-  const id = asset?.asset_id || `oci:service:${name}`;
-  const isSelf = name.startsWith("infradocs-v6-");
-
   return (
-    <div className="flex items-center justify-between py-2 border-b border-bg-hover/40 last:border-0">
+    <div className="flex items-center justify-between gap-3 py-2 border-b border-bg-hover/40 last:border-0">
       <div className="flex items-center gap-3 min-w-0">
         <span className="text-sm text-slate-200 truncate">{name}</span>
         {asset?.status && <StatePill value={asset.status} />}
       </div>
-      <div className="flex items-center gap-1">
-        <ActionButton
-          action="status"
-          fire={() => endpoints.fireAssetAction(id, "status")}
+      {asset && (
+        <ActionBar
+          entity={{ category: asset.category, asset_id: asset.asset_id, name }}
+          size="sm"
         />
-        <ActionButton
-          action="logs"
-          fire={() => endpoints.fireAssetAction(id, "logs", { tail: 200 })}
-        />
-        <ActionButton
-          action="restart"
-          fire={() => endpoints.fireAssetAction(id, "restart")}
-          disabled={isSelf}
-          disabledReason="Self-protected — would kill the API"
-        />
-      </div>
+      )}
     </div>
+  );
+}
+
+// Compose lives at the project level; resolve its asset to surface Update/up/down.
+function ComposeSection({ project, file }) {
+  const q = useQuery({
+    queryKey: ["asset-by-name", "docker_compose", project],
+    queryFn: () =>
+      endpoints
+        .listAssets({ category: "docker_compose", project })
+        .then((r) => (r.data.assets || [])[0]),
+  });
+  const asset = q.data;
+  return (
+    <Section title="Compose">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-sm text-slate-300 font-mono break-all min-w-0">{file}</div>
+        {asset && (
+          <ActionBar
+            entity={{ category: "docker_compose", asset_id: asset.asset_id, name: asset.name }}
+            size="sm"
+          />
+        )}
+      </div>
+    </Section>
   );
 }
 
@@ -264,14 +249,28 @@ export default function ApplicationDetail({ name: nameProp }) {
             </Section>
           )}
 
-          {/* Compose */}
-          {app.compose_file && (
-            <Section title="Compose">
-              <div className="text-sm text-slate-300 font-mono break-all">
-                {app.compose_file}
-              </div>
+          {/* Images — where the "is there a newer version?" decision happens */}
+          {app.images?.length > 0 && (
+            <Section title="Images" count={app.images.length}>
+              {app.images.map((img) => (
+                <div
+                  key={img}
+                  className="flex items-center justify-between gap-3 py-2 border-b border-bg-hover/40 last:border-0"
+                >
+                  <span className="text-sm text-slate-200 font-mono truncate" title={img}>
+                    {img}
+                  </span>
+                  <ActionBar
+                    entity={{ category: "docker_image", name: img, resolveByName: true }}
+                    size="sm"
+                  />
+                </div>
+              ))}
             </Section>
           )}
+
+          {/* Compose */}
+          {app.compose_file && <ComposeSection project={name} file={app.compose_file} />}
 
           {/* Systemd */}
           {app.systemd_units?.length > 0 && (
@@ -287,8 +286,12 @@ export default function ApplicationDetail({ name: nameProp }) {
             <Section title="Nginx sites" count={app.nginx_sites.length}>
               <div className="space-y-1">
                 {app.nginx_sites.map((s) => (
-                  <div key={s} className="text-sm text-slate-200">
-                    {s}
+                  <div key={s} className="flex items-center justify-between gap-3 py-1">
+                    <span className="text-sm text-slate-200 truncate">{s}</span>
+                    <ActionBar
+                      entity={{ category: "nginx_server_block", name: s, resolveByName: true }}
+                      size="sm"
+                    />
                   </div>
                 ))}
               </div>
@@ -303,12 +306,16 @@ export default function ApplicationDetail({ name: nameProp }) {
                   key={v.name}
                   className="flex items-center justify-between py-1.5 border-b border-bg-hover/40 last:border-0"
                 >
-                  <div className="text-sm text-slate-200">{v.name}</div>
+                  <div className="text-sm text-slate-200 min-w-0 truncate">{v.name}</div>
                   <div className="flex items-center gap-3 text-xs text-slate-400">
-                    <span className="font-mono truncate max-w-[260px]" title={v.mountpoint}>
+                    <span className="font-mono truncate max-w-[200px]" title={v.mountpoint}>
                       {v.mountpoint}
                     </span>
                     <span>{formatBytes(v.size_bytes)}</span>
+                    <ActionBar
+                      entity={{ category: "docker_volume", name: v.name, resolveByName: true }}
+                      size="sm"
+                    />
                   </div>
                 </div>
               ))}
