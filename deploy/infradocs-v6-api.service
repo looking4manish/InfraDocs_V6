@@ -15,8 +15,12 @@ RestartSec=5
 StandardOutput=append:/home/msinha/projects/InfraDocs_V6/logs/api.service.log
 StandardError=append:/home/msinha/projects/InfraDocs_V6/logs/api.service.log
 
-# Light hardening — full hardening can wait for Phase 8.
-NoNewPrivileges=true
+# NOTE: NoNewPrivileges must be FALSE — the Phase 8 action layer shells out to
+# `sudo systemctl ...` / `sudo nginx ...` for operational actions, and
+# NoNewPrivileges blocks sudo's setuid escalation ("the 'no new privileges' flag
+# is set, which prevents sudo from running as root"). The real guardrail is the
+# restricted sudoers allowlist (deploy/sudoers.infradocs) + in-app self-protect.
+NoNewPrivileges=false
 PrivateTmp=true
 
 [Install]
