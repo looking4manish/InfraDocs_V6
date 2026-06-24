@@ -21,6 +21,12 @@ SYSTEMD_SHOW_PROPS = [
     "Restart",
     "Description",
     "UnitFileState",
+    # Runtime state — also valid for installed-but-unloaded units (so a
+    # disabled+stopped unit, which drops out of `list-units`, still reports
+    # the real ActiveState=inactive instead of going stale at "active").
+    "ActiveState",
+    "SubState",
+    "LoadState",
 ]
 
 
@@ -59,95 +65,129 @@ class SystemdScanner(BaseScanner):
     def _scan_units(self, unit_type: str) -> List[Dict[str, Any]]:
         category = f"systemd_{unit_type}"
         assets: List[Dict[str, Any]] = []
+        seen: set = set()
 
+        # Pass A — loaded units (runtime state comes inline from list-units).
         try:
             result = subprocess.run(
                 [
-                    "systemctl",
-                    "list-units",
-                    f"--type={unit_type}",
-                    "--all",
-                    "--no-pager",
-                    "--plain",
+                    "systemctl", "list-units", f"--type={unit_type}",
+                    "--all", "--no-pager", "--plain",
                 ],
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
+                capture_output=True, text=True, timeout=15, check=False,
             )
         except Exception as e:
             self.add_error(f"systemctl list-units {unit_type} failed: {e}")
-            return assets
+            result = None
 
-        for line in result.stdout.splitlines():
-            parts = line.split(None, 4)
-            if len(parts) < 4:
+        if result is not None:
+            for line in result.stdout.splitlines():
+                parts = line.split(None, 4)
+                if len(parts) < 4:
+                    continue
+                unit_name = parts[0]
+                if not unit_name.endswith(f".{unit_type}"):
+                    continue
+                seen.add(unit_name)
+                assets.append(self._build_unit_asset(
+                    unit_type, category, unit_name,
+                    load_state=parts[1], active_state=parts[2], sub_state=parts[3],
+                ))
+
+        # Pass B — installed-but-unloaded units (disabled/stopped drop out of
+        # list-units). Pull their real state from `systemctl show` so they don't
+        # go stale at the last-known "active".
+        for unit_name in self._list_unit_file_names(unit_type):
+            if unit_name in seen:
                 continue
-            unit_name = parts[0]
-            if not unit_name.endswith(f".{unit_type}"):
-                continue
-
-            load_state, active_state, sub_state = parts[1], parts[2], parts[3]
-
             show = self._systemctl_show(unit_name)
-            unit_file_path = show.get("FragmentPath", "")
-            project = self.project_detector.get_project_from_service_name(
-                unit_name, unit_file_path
-            )
-            # Also try resolving via WorkingDirectory / ExecStart if unit file
-            # is in /etc/systemd but the binary lives in a project dir.
-            # Only consider absolute paths — `!/root` and similar systemd
-            # quoting prefixes are not real filesystem paths.
-            if project == "System":
-                working_dir = show.get("WorkingDirectory", "")
-                if working_dir.startswith("/"):
-                    project = self.project_detector.get_project_from_path(working_dir)
-            if project == "System":
-                exec_start = show.get("ExecStart", "")
-                m = re.search(r"path=(/\S+)", exec_start)
-                if m:
-                    project = self.project_detector.get_project_from_path(m.group(1))
-
-            metadata = {
-                "load_state": load_state,
-                "active_state": active_state,
-                "sub_state": sub_state,
-                "unit_type": unit_type,
-                "unit_file": unit_file_path or None,
-                "drop_in_paths": [
-                    p for p in (show.get("DropInPaths") or "").split() if p
-                ],
-                "exec_start": show.get("ExecStart") or None,
-                "working_directory": show.get("WorkingDirectory") or None,
-                "user": show.get("User") or None,
-                "group": show.get("Group") or None,
-                "restart": show.get("Restart") or None,
-                "unit_file_state": show.get("UnitFileState") or None,
-                "description": show.get("Description") or None,
-                "environment_keys": _env_keys_from_systemd(show.get("Environment") or ""),
-                "environment_files": [
-                    p for p in (show.get("EnvironmentFiles") or "").split() if p
-                ],
-            }
-            health = {
-                "loaded": load_state == "loaded",
-                "active": active_state == "active",
-            }
-            if unit_type == "service":
-                health["enabled"] = self._is_enabled(unit_name)
-
-            assets.append(
-                self.create_asset(
-                    category=category,
-                    asset_id=f"{self.server_id}:{unit_type}:{unit_name}",
-                    name=unit_name,
-                    status=active_state,
-                    project=project,
-                    metadata=metadata,
-                    health_indicators=health,
-                )
-            )
+            assets.append(self._build_unit_asset(
+                unit_type, category, unit_name,
+                load_state=show.get("LoadState", "loaded"),
+                active_state=show.get("ActiveState", "inactive"),
+                sub_state=show.get("SubState", "dead"),
+                show=show,
+            ))
         return assets
+
+    def _list_unit_file_names(self, unit_type: str) -> List[str]:
+        try:
+            r = subprocess.run(
+                [
+                    "systemctl", "list-unit-files", f"--type={unit_type}",
+                    "--no-pager", "--plain",
+                ],
+                capture_output=True, text=True, timeout=15, check=False,
+            )
+        except Exception as e:
+            self.add_error(f"systemctl list-unit-files {unit_type} failed: {e}")
+            return []
+        names = []
+        for line in r.stdout.splitlines():
+            parts = line.split(None, 1)
+            if parts and parts[0].endswith(f".{unit_type}"):
+                names.append(parts[0])
+        return names
+
+    def _build_unit_asset(
+        self, unit_type: str, category: str, unit_name: str, *,
+        load_state: str, active_state: str, sub_state: str,
+        show: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        if show is None:
+            show = self._systemctl_show(unit_name)
+        unit_file_path = show.get("FragmentPath", "")
+        project = self.project_detector.get_project_from_service_name(
+            unit_name, unit_file_path
+        )
+        # Resolve via WorkingDirectory / ExecStart if the unit file is in
+        # /etc/systemd but the binary lives in a project dir. Only absolute
+        # paths — systemd quoting prefixes like `!/root` are not real paths.
+        if project == "System":
+            working_dir = show.get("WorkingDirectory", "")
+            if working_dir.startswith("/"):
+                project = self.project_detector.get_project_from_path(working_dir)
+        if project == "System":
+            exec_start = show.get("ExecStart", "")
+            m = re.search(r"path=(/\S+)", exec_start)
+            if m:
+                project = self.project_detector.get_project_from_path(m.group(1))
+
+        metadata = {
+            "load_state": load_state,
+            "active_state": active_state,
+            "sub_state": sub_state,
+            "unit_type": unit_type,
+            "unit_file": unit_file_path or None,
+            "drop_in_paths": [p for p in (show.get("DropInPaths") or "").split() if p],
+            "exec_start": show.get("ExecStart") or None,
+            "working_directory": show.get("WorkingDirectory") or None,
+            "user": show.get("User") or None,
+            "group": show.get("Group") or None,
+            "restart": show.get("Restart") or None,
+            "unit_file_state": show.get("UnitFileState") or None,
+            "description": show.get("Description") or None,
+            "environment_keys": _env_keys_from_systemd(show.get("Environment") or ""),
+            "environment_files": [
+                p for p in (show.get("EnvironmentFiles") or "").split() if p
+            ],
+        }
+        health = {
+            "loaded": load_state == "loaded",
+            "active": active_state == "active",
+        }
+        if unit_type == "service":
+            health["enabled"] = self._is_enabled(unit_name)
+
+        return self.create_asset(
+            category=category,
+            asset_id=f"{self.server_id}:{unit_type}:{unit_name}",
+            name=unit_name,
+            status=active_state,
+            project=project,
+            metadata=metadata,
+            health_indicators=health,
+        )
 
     def _systemctl_show(self, unit_name: str) -> Dict[str, str]:
         try:
