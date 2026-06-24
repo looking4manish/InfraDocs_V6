@@ -7,6 +7,7 @@ import ActionBar from "../components/ActionBar";
 import StatePill from "../components/StatePill";
 import TopologyLane from "../components/TopologyLane";
 import Breadcrumbs from "../components/Breadcrumbs";
+import BlastRadiusPanel from "../components/BlastRadiusPanel";
 
 function Section({ title, count, children, right }) {
   return (
@@ -209,6 +210,8 @@ export default function ApplicationDetail({ name: nameProp }) {
             <StatCard label="Nginx sites" value={app.nginx_sites?.length || 0} />
             <StatCard label="Disk" value={formatBytes(app.total_size_bytes)} />
           </div>
+
+          <BlastRadiusPanel name={name} />
 
           {/* URLs */}
           {app.urls?.length > 0 && (

@@ -66,6 +66,8 @@ export const endpoints = {
     api.get("/api/applications/list", { params }),
   getApplication: (name) =>
     api.get(`/api/applications/${encodeURIComponent(name)}`),
+  blastRadius: (name) =>
+    api.get(`/api/applications/${encodeURIComponent(name)}/blast-radius`),
 
   // ports registry (Phase 7B)
   listPorts: (params = {}) => api.get("/api/ports/", { params }),
