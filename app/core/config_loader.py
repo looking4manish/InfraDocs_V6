@@ -84,7 +84,20 @@ def load_config(config_path: str = "config.yml") -> Config:
     with open(config_file, "r") as f:
         raw = yaml.safe_load(f)
 
+    # Env overrides so the SAME image/config.yml deploys on any host via .env.
+    _env_override(raw, "server", "id", "INFRADOCS_SERVER_ID")
+    _env_override(raw, "server", "name", "INFRADOCS_SERVER_NAME")
+    _env_override(raw, "paths", "projects_root", "INFRADOCS_PROJECTS_ROOT")
+    _env_override(raw, "mongodb", "database", "INFRADOCS_DB")
+    _env_override(raw, "auth", "username", "INFRADOCS_API_USERNAME")
+
     return Config(**raw)
+
+
+def _env_override(raw: dict, section: str, key: str, env: str) -> None:
+    val = os.environ.get(env)
+    if val and isinstance(raw.get(section), dict):
+        raw[section][key] = val
 
 
 _config: Optional[Config] = None

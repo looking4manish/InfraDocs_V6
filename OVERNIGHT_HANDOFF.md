@@ -21,15 +21,21 @@ one-liner for the morning. (The permission guardrail also blocks autonomous prod
 
 ## Plan / progress  (✅ done · ⏳ in progress · ⬜ todo)
 - ✅ A1. Storage containerized-mode: `INFRADOCS_HOST_ROOT=/host` → reads host mounts via /proc/1/mounts + statvfs. Native unchanged (4 mounts, 20 tests). Commit done.
-- ⬜ A2. `docker-compose.yml`: bundled Mongo + API (host mounts proven in PoC) + web.
-- ⬜ A3. Web image: built frontend behind **Caddy** (auto Let's Encrypt from `DOMAIN`).
-- ⬜ A4. `.env`-driven config + first-class admin password (no dev default).
-- ⬜ A5. Full-stack smoke test (compose up on a spare port; scans + UI + an action).
-- ⬜ B1. Caddy detector (parse Caddyfile reverse_proxy → host/upstream).
-- ⬜ B2. Cloudflare Tunnel detector (cloudflared service/container + ingress config).
-- ⬜ B3. Exposure-combining pass in the correlator (nginx ∪ caddy ∪ tunnel ∪ direct → per-service exposure + mechanism + public hostname).
-- ⬜ B4. Tests + live verify.
-- ⬜ Z. Update this handoff with deploy/cutover commands + UAT instructions.
+- ✅ A2/A3/A5. Full compose stack (mongo + api host-access + Caddy web) built + DEPLOYED
+  in parallel (ports 8081/8443/8090/27018). Smoke test PASSED: 424 assets, 9 apps,
+  69GB storage, 29 ports, UI served over TLS + /api proxy, auth required. Running now
+  via `docker compose -f deploy/docker/docker-compose.yml --env-file deploy/docker/.env`.
+- ✅ (bonus) Fixed API scan job to build ports+storage registries (was agent-only) —
+  fixes "Scan now is incomplete" for native AND docker (storage was 0). commit b55ce46.
+- ⏳ A4. Env-overridable server_id/projects_root/db/username (config_loader._env_override
+  + compose env + .env.example). Done in code; needs suite + final docker rebuild.
+- ✅ B1. Caddy detector (app/scanners/caddy.py) — Caddyfile reverse_proxy parse. commit 85ba808.
+- ✅ B2. Cloudflare Tunnel detector (app/scanners/cloudflared.py) — ingress parse. commit 85ba808.
+- ✅ B3. Correlator Pass 6c unifies nginx ∪ caddy ∪ cloudflare_tunnel → app.exposure[]
+  (+ internet_exposed + public URL). nginx now flows through the same _expose helper.
+- ✅ B4. 10 new tests (test_exposure_detectors.py + correlator exposure test). Both
+  detectors run clean on OCI (0 — OCI has no host caddy/cloudflared; live-test on N150).
+- ⬜ Z. Final handoff: deploy/cutover commands + UAT instructions.
 
 ## Facts (don't re-derive)
 - PoC verdict: dockerizing works. From inside the container (host net+pid, docker.sock,
