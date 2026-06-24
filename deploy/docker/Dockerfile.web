@@ -1,0 +1,12 @@
+# Web tier: build the React frontend, serve it behind Caddy (auto Let's Encrypt
+# TLS when DOMAIN is a real hostname; plain HTTP for localhost/parallel UAT).
+FROM node:20-slim AS build
+WORKDIR /app
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm install
+COPY frontend/ ./
+RUN npx vite build
+
+FROM caddy:2-alpine
+COPY --from=build /app/dist /srv
+COPY deploy/docker/Caddyfile /etc/caddy/Caddyfile

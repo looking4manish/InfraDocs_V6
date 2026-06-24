@@ -1,0 +1,16 @@
+# InfraDocs web. {$DOMAIN} → if a real hostname, Caddy auto-provisions Let's
+# Encrypt TLS on :443; if localhost it just serves HTTP. /api/* proxies to the
+# API (on the host network); everything else is the SPA (history fallback).
+{$DOMAIN:localhost} {
+	handle /api/* {
+		reverse_proxy {$API_UPSTREAM:http://host.docker.internal:8004}
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+		header /static/* Cache-Control "public, max-age=31536000, immutable"
+		header /index.html Cache-Control "no-cache, must-revalidate"
+	}
+}

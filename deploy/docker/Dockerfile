@@ -32,4 +32,5 @@ COPY app/ ./app/
 COPY config.yml ./config.yml
 
 EXPOSE 8004
-CMD ["python", "-m", "uvicorn", "app.api.main:app", "--host", "0.0.0.0", "--port", "8004"]
+# Port is env-driven so the same image works at 8004 (cutover) or an alt port (parallel UAT).
+CMD ["sh", "-c", "exec python -m uvicorn app.api.main:app --host 0.0.0.0 --port ${INFRADOCS_API_PORT:-8004}"]

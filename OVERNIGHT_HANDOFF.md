@@ -20,7 +20,7 @@ mid-swap risks leaving the live site down. So it's left as a tested, documented
 one-liner for the morning. (The permission guardrail also blocks autonomous prod swaps.)
 
 ## Plan / progress  (✅ done · ⏳ in progress · ⬜ todo)
-- ⏳ A1. Storage containerized-mode: read host disk via a mounted `/host` root (env-driven).
+- ✅ A1. Storage containerized-mode: `INFRADOCS_HOST_ROOT=/host` → reads host mounts via /proc/1/mounts + statvfs. Native unchanged (4 mounts, 20 tests). Commit done.
 - ⬜ A2. `docker-compose.yml`: bundled Mongo + API (host mounts proven in PoC) + web.
 - ⬜ A3. Web image: built frontend behind **Caddy** (auto Let's Encrypt from `DOMAIN`).
 - ⬜ A4. `.env`-driven config + first-class admin password (no dev default).
