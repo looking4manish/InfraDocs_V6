@@ -102,6 +102,24 @@ def _project_dirs(projects_root: str) -> Set[str]:
     }
 
 
+def _domain_matches(cert_domain: str, server_name: str) -> bool:
+    """RFC-6125-style match: 'foo.example.com' == 'foo.example.com', and a
+    wildcard '*.example.com' matches exactly one extra label (foo.example.com,
+    not example.com and not a.b.example.com)."""
+    cert_domain = (cert_domain or "").lower().strip()
+    server_name = (server_name or "").lower().strip()
+    if not cert_domain or not server_name:
+        return False
+    if cert_domain == server_name:
+        return True
+    if cert_domain.startswith("*."):
+        base = cert_domain[2:]
+        if server_name.endswith("." + base):
+            label = server_name[: -(len(base) + 1)]
+            return bool(label) and "." not in label
+    return False
+
+
 def _link(
     app: Dict[str, Any],
     src_kind: str,
@@ -332,7 +350,8 @@ def correlate(
         )
 
     # ---- Pass 6: nginx blocks ---------------------------------------------
-    domain_to_app: Dict[str, str] = {}  # server_name -> owning app (for cert linking)
+    domain_to_app: Dict[str, str] = {}  # server_name -> owning app (cert fallback)
+    cert_path_to_apps: Dict[str, Set[str]] = defaultdict(set)  # ssl_certificate file -> apps
     for ng in by_cat.get("nginx_server_block", []):
         meta = ng["metadata"]
         upstream_port = meta.get("upstream_port")
@@ -344,12 +363,16 @@ def correlate(
             via = "project_tag"
         app = apps[app_name]
         domain_to_app[ng["name"]] = app_name
+        cert_file = meta.get("ssl_certificate")
+        if cert_file:
+            cert_path_to_apps[cert_file].add(app_name)
         app["nginx_sites"].append(ng["name"])
         _link(app, "nginx_server_block", ng["name"], "application", app_name, via, 6)
         app["nginx_detail"].append(
             {
                 "server_name": ng["name"],
                 "config_file": meta.get("config_file"),
+                "ssl_certificate": cert_file,
                 "listen_ports": meta.get("listen_ports") or [],
                 "upstream_host": meta.get("upstream_host"),
                 "upstream_port": upstream_port,
@@ -369,13 +392,21 @@ def correlate(
         if meta.get("cloudflare_origin"):
             app["cloudflare"] = True
 
-    # ---- Pass 6b: TLS certificates → the app whose domain(s) they secure ---
+    # ---- Pass 6b: TLS certificates → the app(s) that use them --------------
+    # Primary: the exact cert FILE an nginx block points at (ssl_certificate) —
+    # this is the real dependency, and a file used by >1 app => shared. Fallback:
+    # domain/SAN coverage (incl. wildcard) when no file match; then attribution.
     for cert in by_cat.get("tls_certificate", []):
         cmeta = cert["metadata"]
         domains = cmeta.get("domains") or [cert["name"]]
-        linked = {domain_to_app[d] for d in domains if d in domain_to_app}
+        linked = set(cert_path_to_apps.get(cmeta.get("cert_path"), set()))
         if not linked:
-            # No nginx domain match — fall back to the cert's own attribution.
+            for cd in domains:
+                for server_name, app_name in domain_to_app.items():
+                    if _domain_matches(cd, server_name):
+                        linked.add(app_name)
+        if not linked:
+            # No nginx match at all — fall back to the cert's own attribution.
             fallback = _route(cert.get("project") or SYSTEM_BUCKET)
             if fallback != SYSTEM_BUCKET:
                 linked = {fallback}

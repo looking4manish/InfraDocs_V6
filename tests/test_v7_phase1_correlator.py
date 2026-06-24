@@ -72,6 +72,43 @@ def test_cert_links_to_app_via_nginx_domain(tmp_path):
     } in web["links"]
 
 
+def test_domain_matches_wildcard_rules():
+    from app.correlator import _domain_matches
+    assert _domain_matches("foo.example.com", "foo.example.com")
+    assert _domain_matches("*.example.com", "foo.example.com")
+    assert not _domain_matches("*.example.com", "example.com")     # apex not covered
+    assert not _domain_matches("*.example.com", "a.b.example.com")  # only one label
+    assert not _domain_matches("foo.example.com", "bar.example.com")
+
+
+def test_shared_cert_file_links_to_all_using_apps(tmp_path):
+    """Two apps' nginx blocks point at the SAME cert file -> cert linked to both
+    (so a wildcard cert used across apps is flagged shared and never killed)."""
+    cert_file = "/etc/letsencrypt/live/ocialwaysfree.site/fullchain.pem"
+    assets = [
+        _asset("nginx_server_block", "a.example.com", "web",
+               {"server_name": "a.example.com", "ssl_certificate": cert_file}),
+        _asset("nginx_server_block", "b.example.com", "api",
+               {"server_name": "b.example.com", "ssl_certificate": cert_file}),
+        _asset("tls_certificate", "ocialwaysfree.site", "System",
+               {"domains": ["*.example.com"], "cert_path": cert_file}, status="valid"),
+    ]
+    apps = _run(assets, tmp_path, projects=("web", "api"))
+    assert "ocialwaysfree.site" in apps["web"]["certificates"]
+    assert "ocialwaysfree.site" in apps["api"]["certificates"]
+
+
+def test_wildcard_san_fallback_when_no_cert_file(tmp_path):
+    """No ssl_certificate file to match -> wildcard SAN matches the subdomain."""
+    assets = [
+        _asset("nginx_server_block", "foo.example.com", "web",
+               {"server_name": "foo.example.com"}),
+        _asset("tls_certificate", "wild", "System", {"domains": ["*.example.com"]}),
+    ]
+    apps = _run(assets, tmp_path)
+    assert "wild" in apps["web"]["certificates"]
+
+
 def test_container_link_via_project_dir_when_no_label(tmp_path):
     assets = [_asset("docker_container", "solo", "web", {"running": True})]
     apps = _run(assets, tmp_path)
