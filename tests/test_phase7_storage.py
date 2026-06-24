@@ -133,6 +133,23 @@ def test_bind_mount_under_project_root_attributes_to_project(tmp_path):
     assert binds[0]["size_bytes"] >= 3000
 
 
+def test_system_bind_mounts_are_not_sized(tmp_path):
+    """Monitoring stacks bind `/`, `/proc`, etc. — record them but never du-walk
+    the host. Regression: a `/` bind was sized at ~1 PB via /proc/kcore's phantom
+    apparent size, showing 'Storage 1016 TB' on the dashboard."""
+    rows = build_storage_registry(
+        [_container("node-exporter", project="db-observability",
+                    bind_sources=["/", "/proc", "/var/run/docker.sock"])],
+        server_id="oci",
+        projects_root=str(tmp_path),
+        valid_projects={"db-observability"},
+    )
+    binds = [r for r in rows if r["kind"] == "bind_mount"]
+    assert binds, "system bind mounts should still be recorded"
+    for b in binds:
+        assert b["size_bytes"] == 0, f"system mount {b['path']} must not be sized"
+
+
 def test_bind_mount_outside_project_root_uses_container_app(tmp_path):
     """A bind to /var/lib/postgres but container owned by openwebui → openwebui."""
     rows = build_storage_registry(

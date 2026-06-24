@@ -17,10 +17,31 @@ the using container's app.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from app.scanners.docker import _dir_size_bytes
+
+
+# Bind mounts of host system paths (the classic monitoring-stack pattern, e.g.
+# node-exporter/cAdvisor mounting `/`, `/proc`, `/rootfs`) are NOT app data — and
+# du-walking them yields meaningless host-wide totals. We still record the mount,
+# but don't attribute a size to it.
+_UNSIZABLE_BIND_EXACT = frozenset({
+    "/", "/etc", "/usr", "/var", "/var/lib/docker", "/host", "/hostfs", "/rootfs",
+})
+_UNSIZABLE_BIND_PREFIXES = ("/proc", "/sys", "/dev", "/run", "/var/run", "/boot")
+
+
+def _is_unsizable_bind(src: str) -> bool:
+    """True for host system-path bind mounts that must not be du-walked."""
+    if not src:
+        return True
+    p = os.path.normpath(src)
+    if p in _UNSIZABLE_BIND_EXACT:
+        return True
+    return any(p == pre or p.startswith(pre + "/") for pre in _UNSIZABLE_BIND_PREFIXES)
 
 
 def _new_row(
@@ -192,10 +213,17 @@ def build_storage_registry(
                 owner_project=owner,
                 server_id=server_id,
             )
-            row["size_bytes"] = _dir_size_bytes(src)
-            row["evidence_sources"].append(
-                {"kind": "container_bind", "source": c["name"]}
-            )
+            if _is_unsizable_bind(src):
+                # System/observability mount — record it, but don't size the host.
+                row["size_bytes"] = 0
+                row["evidence_sources"].append(
+                    {"kind": "container_bind", "source": c["name"], "note": "system_mount_unsized"}
+                )
+            else:
+                row["size_bytes"] = _dir_size_bytes(src)
+                row["evidence_sources"].append(
+                    {"kind": "container_bind", "source": c["name"]}
+                )
             _commit(row)
 
     rows.sort(key=lambda r: (r["kind"], r["owner_project"], r["name"]))

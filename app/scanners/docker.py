@@ -31,13 +31,22 @@ def _split_env_keys(env_list):
     return keys
 
 
+# Pseudo-filesystems whose files report phantom/enormous apparent sizes
+# (e.g. /proc/kcore is ~128 TB). Walking into them when sizing a tree rooted
+# at / would explode the total into bogus petabytes. Never descend into them.
+_PSEUDO_FS_PATHS = frozenset({"/proc", "/sys", "/dev", "/run"})
+
+
 def _dir_size_bytes(path: str) -> int:
-    """Sum file sizes under `path`. Skips on permission/oserror."""
+    """Sum file sizes under `path`. Prunes pseudo-filesystems; skips on oserror."""
     if not path or not os.path.isdir(path):
         return 0
     total = 0
     try:
         for root, dirs, files in os.walk(path, followlinks=False):
+            # Prune /proc, /sys, /dev, /run — their phantom files (kcore etc.)
+            # would otherwise blow the sum up to bogus petabyte totals.
+            dirs[:] = [d for d in dirs if os.path.join(root, d) not in _PSEUDO_FS_PATHS]
             for f in files:
                 try:
                     total += os.path.getsize(os.path.join(root, f))

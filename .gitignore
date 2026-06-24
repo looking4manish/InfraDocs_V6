@@ -44,3 +44,4 @@ dist/
 frontend/dist.bak.*/
 frontend/dist/
 *.bak.upd
+*.bak.storfix
