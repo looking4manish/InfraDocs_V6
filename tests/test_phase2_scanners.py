@@ -57,6 +57,8 @@ def test_registry_has_all_scanners():
         "storage",
         "cron",
         "certs",
+        "caddy",
+        "cloudflared",
     }
 
 

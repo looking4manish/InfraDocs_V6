@@ -63,6 +63,7 @@ def _empty_app(name: str, *, source: Optional[str], type_: str) -> Dict[str, Any
         "project_dir_size_bytes": 0,
         "total_size_bytes": 0,
         "internet_exposed": False,
+        "exposure": [],  # [{via, hostname, upstream_port}] across nginx/caddy/tunnel
         "cloudflare": False,
         "env_keys": [],
         "components_count": 0,
@@ -118,6 +119,18 @@ def _domain_matches(cert_domain: str, server_name: str) -> bool:
             label = server_name[: -(len(base) + 1)]
             return bool(label) and "." not in label
     return False
+
+
+def _expose(app: Dict[str, Any], via: str, hostname: str, upstream_port) -> None:
+    """Record an exposure mechanism (nginx/caddy/cloudflare_tunnel) on the app."""
+    if not hostname:
+        return
+    app["internet_exposed"] = True
+    url = f"https://{hostname}"
+    if url not in app["urls"]:
+        app["urls"].append(url)
+    if not any(e["hostname"] == hostname and e["via"] == via for e in app["exposure"]):
+        app["exposure"].append({"via": via, "hostname": hostname, "upstream_port": upstream_port})
 
 
 def _link(
@@ -388,7 +401,7 @@ def correlate(
         if url and url not in app["urls"]:
             app["urls"].append(url)
         if meta.get("internet_exposed"):
-            app["internet_exposed"] = True
+            _expose(app, "nginx", ng["name"], upstream_port)
         if meta.get("cloudflare_origin"):
             app["cloudflare"] = True
 
@@ -426,6 +439,22 @@ def correlate(
             })
             _link(app, "tls_certificate", cert["name"], "application", app_name,
                   "nginx_domain", 6)
+
+    # ---- Pass 6c: extra exposure mechanisms (Caddy, Cloudflare Tunnel) -----
+    # A service can be public via Caddy or a Cloudflare tunnel (no open port) —
+    # attribute by the upstream port it fronts (else by the cert/domain project),
+    # and record the mechanism + public hostname so exposure isn't nginx-only.
+    for ex in by_cat.get("caddy_site", []) + by_cat.get("cloudflare_tunnel", []):
+        m = ex["metadata"]
+        via = m.get("exposure_via") or ex["category"]
+        hostname = m.get("server_name") or m.get("hostname") or ex["name"]
+        up = m.get("upstream_port")
+        app_name = host_port_to_app.get(up) if up else None
+        if not app_name:
+            app_name = _route(ex.get("project") or SYSTEM_BUCKET)
+        app = apps[app_name]
+        _expose(app, via, hostname, up)
+        _link(app, ex["category"], hostname, "application", app_name, via, 6)
 
     # ---- Pass 7: systemd services + timers --------------------------------
     for s in by_cat.get("systemd_service", []) + by_cat.get("systemd_timer", []):

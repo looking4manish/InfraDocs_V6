@@ -98,6 +98,23 @@ def test_shared_cert_file_links_to_all_using_apps(tmp_path):
     assert "ocialwaysfree.site" in apps["api"]["certificates"]
 
 
+def test_exposure_surfaced_via_caddy_and_cloudflare_tunnel(tmp_path):
+    """Exposure is detected beyond nginx — Caddy + Cloudflare tunnel mark the app
+    internet_exposed, add the public URL, and record the mechanism."""
+    assets = [
+        _asset("caddy_site", "chat.example.com", "web",
+               {"server_name": "chat.example.com", "upstream_port": 3000, "exposure_via": "caddy"}),
+        _asset("cloudflare_tunnel", "api.example.com", "web",
+               {"hostname": "api.example.com", "upstream_port": 8080, "exposure_via": "cloudflare_tunnel"}),
+    ]
+    apps = _run(assets, tmp_path)
+    web = apps["web"]
+    assert web["internet_exposed"] is True
+    assert {e["via"] for e in web["exposure"]} == {"caddy", "cloudflare_tunnel"}
+    assert "https://chat.example.com" in web["urls"]
+    assert "https://api.example.com" in web["urls"]
+
+
 def test_wildcard_san_fallback_when_no_cert_file(tmp_path):
     """No ssl_certificate file to match -> wildcard SAN matches the subdomain."""
     assets = [

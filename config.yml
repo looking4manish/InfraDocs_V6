@@ -35,6 +35,8 @@ scanning:
     - storage
     - cron
     - certs
+    - caddy
+    - cloudflared
 
 logging:
   level: INFO
