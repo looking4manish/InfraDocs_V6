@@ -55,6 +55,7 @@ def test_registry_has_all_scanners():
         "nginx",
         "port",
         "storage",
+        "cron",
     }
 
 
