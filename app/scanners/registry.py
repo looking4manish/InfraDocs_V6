@@ -3,6 +3,7 @@
 from typing import Dict, Type
 
 from app.scanners.base import BaseScanner
+from app.scanners.certs import CertScanner
 from app.scanners.compose import ComposeScanner
 from app.scanners.cron import CronScanner
 from app.scanners.docker import DockerScanner
@@ -20,4 +21,5 @@ SCANNERS: Dict[str, Type[BaseScanner]] = {
     "port": PortScanner,
     "storage": StorageScanner,
     "cron": CronScanner,
+    "certs": CertScanner,
 }
