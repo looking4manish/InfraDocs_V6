@@ -1,15 +1,19 @@
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
-import { Skull, ShieldAlert, Loader2, Archive, Check, X } from "lucide-react";
+import { createPortal } from "react-dom";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import {
+  Skull, ShieldAlert, Loader2, Archive, Check, X, AlertTriangle,
+} from "lucide-react";
 import { endpoints } from "../api/client";
 import { cn } from "../lib/cn";
 
-// The Kill Button. Two-step: dry-run plan -> type-to-confirm -> execute.
-// The backend backs up first and aborts all deletion if a backup fails.
+// The Kill Button. Two-step: dry-run plan -> type-to-confirm -> execute, with a
+// live log window that streams each teardown step (polled from the audit log).
 export default function KillButton({ name }) {
   const [plan, setPlan] = useState(null);
   const [confirm, setConfirm] = useState("");
   const [result, setResult] = useState(null);
+  const [startedAt, setStartedAt] = useState(null); // ms; non-null = log window open
 
   const planMut = useMutation({
     mutationFn: () => endpoints.teardown(name, { dry_run: true }).then((r) => r.data),
@@ -17,8 +21,26 @@ export default function KillButton({ name }) {
   });
   const killMut = useMutation({
     mutationFn: () => endpoints.teardown(name, { dry_run: false, confirm: name }).then((r) => r.data),
+    onMutate: () => { setStartedAt(Date.now()); setResult(null); },
     onSuccess: setResult,
+    onError: () => setResult({ error: true }),
   });
+
+  // Live log: poll the audit log for this teardown's steps while it runs.
+  const killing = killMut.isPending;
+  const logQ = useQuery({
+    queryKey: ["teardown-log", name, startedAt],
+    queryFn: () => endpoints.listActions({ limit: 80 }).then((r) => r.data),
+    enabled: Boolean(startedAt),
+    refetchInterval: killing ? 1000 : false,
+  });
+  const logRows = (logQ.data?.actions || [])
+    .filter((a) =>
+      String(a.action || "").startsWith("teardown:") &&
+      a.project === name &&
+      new Date(a.timestamp).getTime() >= startedAt - 3000
+    )
+    .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
   const refused = plan?.refusals?.length > 0;
   const armed = confirm === name && !refused;
@@ -26,10 +48,9 @@ export default function KillButton({ name }) {
   function fireKill() {
     if (!armed) return;
     const ok = window.confirm(
-      `PERMANENTLY tear down "${name}".\n\n` +
-      `A backup is written to ~/projects/backups/${name}/ first, then containers, ` +
-      `nginx, volumes and the project directory are removed. Shared assets are skipped.\n\n` +
-      `This cannot be undone. Continue?`
+      `PERMANENTLY tear down "${name}".\n\nA backup is written to ` +
+      `~/projects/backups/${name}/ first, then containers, nginx, volumes and the ` +
+      `project directory are removed. Shared assets are skipped.\n\nThis cannot be undone. Continue?`
     );
     if (ok) killMut.mutate();
   }
@@ -41,7 +62,7 @@ export default function KillButton({ name }) {
         <span className="text-[13px] font-semibold text-red-300">Danger zone — Kill {name}</span>
       </div>
 
-      {!plan && !result && (
+      {!plan && (
         <button
           onClick={() => planMut.mutate()}
           disabled={planMut.isPending}
@@ -57,13 +78,10 @@ export default function KillButton({ name }) {
         </div>
       )}
 
-      {/* ---- dry-run plan ---- */}
-      {plan && !result && (
+      {plan && (
         <div className="space-y-2.5">
           {refused ? (
-            <div className="text-[12.5px] text-red-300">
-              Refused: {plan.refusals.join("; ")}
-            </div>
+            <div className="text-[12.5px] text-red-300">Refused: {plan.refusals.join("; ")}</div>
           ) : (
             <>
               <div className="text-[11px] text-zinc-500 flex items-center gap-1.5">
@@ -88,7 +106,6 @@ export default function KillButton({ name }) {
                   Skipped (shared/protected): {plan.skipped.map((s) => s.name).join(", ")}
                 </div>
               )}
-
               <div className="flex items-center gap-2 pt-1">
                 <input
                   value={confirm}
@@ -98,14 +115,14 @@ export default function KillButton({ name }) {
                 />
                 <button
                   onClick={fireKill}
-                  disabled={!armed || killMut.isPending}
+                  disabled={!armed || killing}
                   className={cn(
                     "inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md font-semibold transition",
                     armed ? "bg-red-500/80 text-white hover:bg-red-500"
                           : "bg-red-500/15 text-red-300/50 cursor-not-allowed"
                   )}
                 >
-                  {killMut.isPending ? <Loader2 size={12} className="animate-spin" /> : <Skull size={12} />}
+                  {killing ? <Loader2 size={12} className="animate-spin" /> : <Skull size={12} />}
                   Kill {name}
                 </button>
               </div>
@@ -114,26 +131,80 @@ export default function KillButton({ name }) {
         </div>
       )}
 
-      {/* ---- execution result ---- */}
-      {result && (
-        <div className="space-y-1.5">
-          <div className={cn("text-[12.5px] font-semibold", result.aborted ? "text-amber-300" : "text-emerald-300")}>
-            {result.aborted ? "Aborted after a backup failure — nothing was deleted." : `Teardown complete · backup at ${result.backup_dir}`}
-          </div>
-          <div className="text-[11px] font-mono space-y-0.5 max-h-52 overflow-y-auto">
-            {result.results.map((r, i) => (
-              <div key={i} className="flex items-center gap-2">
-                {r.status === "success" ? <Check size={11} className="text-emerald-400" />
-                  : r.status === "skipped" ? <span className="text-zinc-600 w-[11px] text-center">·</span>
-                  : <X size={11} className="text-red-400" />}
-                <span className="text-zinc-500">{r.op}</span>
-                <span className="text-zinc-400 truncate">{r.target}</span>
-                {r.stderr && <span className="text-red-300/70 truncate">{r.stderr}</span>}
-              </div>
-            ))}
-          </div>
+      {startedAt &&
+        createPortal(
+          <KillLogModal
+            name={name}
+            rows={logRows}
+            killing={killing}
+            result={result}
+            onClose={() => { setStartedAt(null); setResult(null); }}
+          />,
+          document.body
+        )}
+    </div>
+  );
+}
+
+function statusIcon(s) {
+  if (s === "success") return <Check size={12} className="text-emerald-400 shrink-0" />;
+  if (s === "skipped") return <span className="text-zinc-600 w-3 text-center shrink-0">·</span>;
+  return <X size={12} className="text-red-400 shrink-0" />;
+}
+
+function KillLogModal({ name, rows, killing, result, onClose }) {
+  return (
+    <div className="fixed inset-0 z-[80] bg-black/65 backdrop-blur-[2px] flex items-center justify-center p-4">
+      <div className="w-full max-w-2xl max-h-[80vh] flex flex-col rounded-xl border border-red-500/30 bg-bg-panel shadow-2xl">
+        <div className="flex items-center gap-2 px-4 py-3 border-b border-bg-hover">
+          {killing
+            ? <Loader2 size={15} className="text-red-400 animate-spin" />
+            : <Skull size={15} className="text-red-400" />}
+          <span className="text-sm font-semibold">
+            {killing ? `Killing ${name}…` : `Teardown of ${name}`}
+          </span>
+          {!killing && (
+            <button onClick={onClose} className="ml-auto p-1 rounded text-zinc-500 hover:text-zinc-200 hover:bg-white/[0.06]">
+              <X size={15} />
+            </button>
+          )}
         </div>
-      )}
+
+        <div className="flex-1 overflow-y-auto p-4 font-mono text-[12px] space-y-1">
+          {rows.length === 0 && (
+            <div className="text-zinc-500">Starting teardown… backing up first.</div>
+          )}
+          {rows.map((r, i) => (
+            <div key={i} className="flex items-start gap-2">
+              {statusIcon(r.status)}
+              <span className="text-zinc-500">{String(r.action).replace("teardown:", "")}</span>
+              <span className="text-zinc-300 truncate">{r.asset_name}</span>
+              {r.stderr && <span className="text-red-300/70 truncate">— {r.stderr.split("\n")[0]}</span>}
+            </div>
+          ))}
+          {killing && rows.length > 0 && (
+            <div className="flex items-center gap-2 text-zinc-500">
+              <Loader2 size={11} className="animate-spin" /> running…
+            </div>
+          )}
+        </div>
+
+        <div className="px-4 py-3 border-t border-bg-hover text-[12px]">
+          {killing ? (
+            <span className="text-zinc-500">Do not close — teardown in progress.</span>
+          ) : result?.error ? (
+            <span className="text-red-300 flex items-center gap-1.5"><AlertTriangle size={13} /> Request failed — see the actions log.</span>
+          ) : result?.aborted ? (
+            <span className="text-amber-300 flex items-center gap-1.5"><AlertTriangle size={13} /> Aborted after a backup failure — nothing was deleted.</span>
+          ) : result ? (
+            <span className="text-emerald-300 flex items-center gap-1.5">
+              <Check size={13} /> Done · backup at <code className="text-zinc-400">{result.backup_dir}</code>
+            </span>
+          ) : (
+            <span className="text-zinc-500">Finishing…</span>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
