@@ -41,6 +41,11 @@ def _dir_size_bytes(path: str) -> int:
     """Sum file sizes under `path`. Prunes pseudo-filesystems; skips on oserror."""
     if not path or not os.path.isdir(path):
         return 0
+    # Defense: never size a pseudo-fs even if asked to walk it directly
+    # (e.g. a container binding /proc — /proc/kcore alone is ~128 TB apparent).
+    norm = os.path.normpath(path)
+    if norm in _PSEUDO_FS_PATHS or any(norm.startswith(p + os.sep) for p in _PSEUDO_FS_PATHS):
+        return 0
     total = 0
     try:
         for root, dirs, files in os.walk(path, followlinks=False):

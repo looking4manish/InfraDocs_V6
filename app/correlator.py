@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from app.scanners.docker import _dir_size_bytes
+from app.storage_registry import _is_unsizable_bind
 
 logger = logging.getLogger(__name__)
 
@@ -429,8 +430,11 @@ def correlate(
         for v in app["volumes"]:
             total += v.get("size_bytes") or 0
         for src in app["storage_paths"]:
-            if not src.startswith(projects_root):
-                total += _dir_size_bytes(src)
+            if src.startswith(projects_root):
+                continue  # already counted via project_dir_size_bytes
+            if _is_unsizable_bind(src):
+                continue  # system/observability mount (/, /proc, …) — not app data
+            total += _dir_size_bytes(src)
         app["total_size_bytes"] = total
 
         for k in (
