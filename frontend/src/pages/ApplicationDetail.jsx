@@ -10,7 +10,7 @@ import Breadcrumbs from "../components/Breadcrumbs";
 
 function Section({ title, count, children, right }) {
   return (
-    <section className="bg-bg-card border border-bg-hover rounded-lg mb-4">
+    <section className="neon-panel rounded-lg mb-4">
       <header className="px-4 py-2.5 border-b border-bg-hover flex items-center justify-between">
         <div className="flex items-center gap-2">
           <h2 className="font-semibold text-sm">{title}</h2>
@@ -426,7 +426,7 @@ export default function ApplicationDetail({ name: nameProp }) {
 
 function StatCard({ label, value }) {
   return (
-    <div className="bg-bg-card border border-bg-hover rounded-lg p-3">
+    <div className="neon-panel rounded-lg p-3">
       <div className="text-[10px] uppercase tracking-wide text-slate-500">
         {label}
       </div>

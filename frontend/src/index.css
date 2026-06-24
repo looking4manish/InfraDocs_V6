@@ -42,18 +42,43 @@ main {
 }
 
 /* ---- MXH Neon-Depth: static depth utilities (no motion) ---- */
+/* Visible neon border-glow: a brighter hairline + a soft cool outer halo, so
+   every panel/card/box reads as a lit edge — not a flat outline. Hover lifts it
+   to the green signal. */
 .neon-panel {
   background: linear-gradient(160deg, #0f2238, #0a1626);
   box-shadow:
-    0 0 0 1px rgba(120, 180, 255, 0.08),
+    0 0 0 1px rgba(120, 180, 255, 0.22),
+    0 0 16px -2px rgba(52, 216, 232, 0.20),
+    0 0 2px 0 rgba(52, 216, 232, 0.25),
     0 18px 40px -24px rgba(0, 0, 0, 0.9),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+.neon-panel-hover {
+  transition: box-shadow 0.18s ease;
 }
 .neon-panel-hover:hover {
   box-shadow:
-    0 0 0 1px rgba(0, 237, 100, 0.25),
+    0 0 0 1px rgba(0, 237, 100, 0.5),
+    0 0 18px -1px rgba(0, 237, 100, 0.35),
+    0 0 3px 0 rgba(0, 237, 100, 0.4),
     0 18px 40px -22px rgba(0, 0, 0, 0.9),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+}
+
+/* Reusable border-glow for non-panel chrome (dotted lines, badges, boxes, icons).
+   .neon-glow = cool default · .neon-glow-green = live/signal · .neon-icon = icon halo. */
+.neon-glow {
+  box-shadow: 0 0 0 1px rgba(120, 180, 255, 0.22), 0 0 12px -2px rgba(52, 216, 232, 0.28);
+}
+.neon-glow-green {
+  box-shadow: 0 0 0 1px rgba(0, 237, 100, 0.4), 0 0 12px -2px rgba(0, 237, 100, 0.32);
+}
+.neon-icon {
+  filter: drop-shadow(0 0 4px rgba(52, 216, 232, 0.55));
+}
+.neon-icon-green {
+  filter: drop-shadow(0 0 4px rgba(0, 237, 100, 0.6));
 }
 /* Faint radial halo behind focal elements only. */
 .neon-halo {
