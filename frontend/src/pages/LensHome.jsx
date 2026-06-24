@@ -162,54 +162,84 @@ function ProjectsLens({ apps, onOpen, reduce }) {
 }
 
 function ServersLens({ apps, reduce }) {
+  const liveCount = HOSTS.filter((h) => h.live).length;
   return (
     <>
       <div className="flex items-baseline gap-3 mb-4">
         <h1 className="text-[21px] font-semibold tracking-tight">Servers</h1>
-        <p className="text-[13px] text-zinc-500">Hosts in the Tailscale mesh — substrate facts per host</p>
+        <p className="text-[13px] text-zinc-500">
+          {liveCount} of {HOSTS.length} hosts reporting · Tailscale mesh
+        </p>
       </div>
       <motion.div
         variants={gridVariants(reduce)}
         initial="hidden"
         animate="show"
-        className="space-y-5"
+        className="grid gap-4"
+        style={{ gridTemplateColumns: "repeat(auto-fill,minmax(340px,1fr))" }}
       >
-        {HOSTS.map((h) => (
-          <motion.div key={h.id} variants={cardVariants(reduce)}>
-            <div className="flex items-center gap-2.5 mb-2.5">
-              <span className={cn("w-2 h-2 rounded-full", h.live ? "bg-emerald-400" : "bg-zinc-600")} />
-              <span className="text-[15px] font-semibold">{h.name}</span>
-              <span className="text-[11px] text-zinc-600 font-mono">
-                {h.ip ? `${h.ip} · ` : ""}TS {h.ts}
-              </span>
-            </div>
-            {h.live ? (
-              <div className="neon-panel rounded-2xl p-4">
-                <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))" }}>
+        {HOSTS.map((h) => {
+          const live = h.live;
+          const exposed = live ? apps.filter((a) => a.internet_exposed).length : 0;
+          const disk = live ? apps.reduce((s, a) => s + (a.total_size_bytes || 0), 0) : 0;
+          return (
+            <motion.div
+              key={h.id}
+              variants={cardVariants(reduce)}
+              whileHover={reduce || !live ? undefined : { y: -2 }}
+              transition={SPRING}
+              className={cn(
+                "rounded-2xl p-5",
+                live ? "neon-panel neon-panel-hover" : "neon-dashed bg-bg-card/30"
+              )}
+            >
+              <div className="flex items-center gap-2.5">
+                <span className={cn("w-2.5 h-2.5 rounded-full shrink-0", live ? "bg-emerald-400" : "bg-zinc-600")} />
+                <span className={cn("text-[16px] font-semibold tracking-tight", !live && "text-zinc-400")}>{h.name}</span>
+                <span className={cn(
+                  "text-[9.5px] font-semibold px-1.5 py-px rounded shrink-0",
+                  live ? "bg-emerald-500/15 text-emerald-300" : "bg-zinc-700/40 text-zinc-400"
+                )}>
+                  {live ? "online" : "pending agent"}
+                </span>
+                <span className="ml-auto text-[10.5px] text-zinc-600 font-mono shrink-0">TS {h.ts}</span>
+              </div>
+              {h.note && <div className="text-[12px] text-zinc-500 mt-1.5">{h.note}</div>}
+
+              {live ? (
+                <div className="grid grid-cols-3 gap-3 mt-4">
                   <Fact k="apps" v={apps.length} />
-                  <Fact k="exposed" v={apps.filter((a) => a.internet_exposed).length} />
-                  <Fact k="disk" v={formatBytes(apps.reduce((s, a) => s + (a.total_size_bytes || 0), 0))} />
+                  <Fact k="exposed" v={exposed} tone={exposed ? "#00ED64" : undefined} />
+                  <Fact k="disk" v={formatBytes(disk)} />
+                  <Fact k="public ip" v={h.ip || "—"} mono />
                   <Fact k="shape" v="A1.Flex" mono />
-                  <Fact k="region" v="ap-hyderabad-1" mono />
+                  <Fact k="region" v="ap-hyd-1" mono />
                 </div>
-              </div>
-            ) : (
-              <div className="neon-dashed bg-bg-card/40 rounded-2xl p-4 text-[13px] text-zinc-500">
-                ◇ no agent yet{h.note ? ` — ${h.note}` : ""} <span className="text-zinc-600">(Phase 6)</span>
-              </div>
-            )}
-          </motion.div>
-        ))}
+              ) : (
+                <div className="mt-4 flex items-center gap-2 text-[12px] text-zinc-500">
+                  <span className="text-accent-cyan">◇</span>
+                  Deploy the InfraDocs agent to claim this host.
+                  <span className="text-zinc-600 ml-auto">Phase 6</span>
+                </div>
+              )}
+            </motion.div>
+          );
+        })}
       </motion.div>
     </>
   );
 }
 
-function Fact({ k, v, mono }) {
+function Fact({ k, v, mono, tone }) {
   return (
     <div>
       <div className="text-[10px] uppercase tracking-[0.08em] text-zinc-600">{k}</div>
-      <div className={cn("text-[13px] text-zinc-200 mt-0.5", mono && "font-mono")}>{v}</div>
+      <div
+        className={cn("text-[13px] text-zinc-200 mt-0.5", mono && "font-mono")}
+        style={tone ? { color: tone } : undefined}
+      >
+        {v}
+      </div>
     </div>
   );
 }
