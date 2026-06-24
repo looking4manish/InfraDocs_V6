@@ -3,6 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.dependencies import get_db, verify_auth
+from app.blast_radius import compute_blast_radius
 from app.core.db_manager import DBManager
 
 router = APIRouter()
@@ -21,6 +22,21 @@ def list_applications(
     for a in apps:
         a["_id"] = str(a["_id"])
     return {"count": len(apps), "applications": apps}
+
+
+@router.get("/{name}/blast-radius")
+def application_blast_radius(
+    name: str,
+    db: DBManager = Depends(get_db),
+    _: str = Depends(verify_auth),
+):
+    """Read-only teardown preview: every asset a kill would touch, with
+    data-loss and shared (must-not-remove) flags. Changes nothing."""
+    app = db.get_application(name)
+    if not app:
+        raise HTTPException(status_code=404, detail="application not found")
+    all_apps = list(db.db.applications.find({}))
+    return compute_blast_radius(app, all_apps)
 
 
 @router.get("/{name}")
