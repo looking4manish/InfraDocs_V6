@@ -47,32 +47,37 @@ main {
    to the green signal. */
 .neon-panel {
   background: linear-gradient(160deg, #0f2238, #0a1626);
+  border: 1px solid rgba(52, 216, 232, 0.45);
+  /* INSET glow renders inside the box, so it survives overflow:hidden/auto
+     ancestors (the drill-down scroll panes). Outer halo adds depth where it
+     isn't clipped. Both bright enough to read clearly on the dark canvas. */
   box-shadow:
-    0 0 0 1px rgba(120, 180, 255, 0.22),
-    0 0 16px -2px rgba(52, 216, 232, 0.20),
-    0 0 2px 0 rgba(52, 216, 232, 0.25),
-    0 18px 40px -24px rgba(0, 0, 0, 0.9),
-    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+    inset 0 0 18px -4px rgba(52, 216, 232, 0.55),
+    0 0 22px -4px rgba(52, 216, 232, 0.45),
+    0 16px 36px -22px rgba(0, 0, 0, 0.9),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 .neon-panel-hover {
-  transition: box-shadow 0.18s ease;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
 .neon-panel-hover:hover {
+  border-color: rgba(0, 237, 100, 0.7);
   box-shadow:
-    0 0 0 1px rgba(0, 237, 100, 0.5),
-    0 0 18px -1px rgba(0, 237, 100, 0.35),
-    0 0 3px 0 rgba(0, 237, 100, 0.4),
-    0 18px 40px -22px rgba(0, 0, 0, 0.9),
-    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+    inset 0 0 20px -4px rgba(0, 237, 100, 0.6),
+    0 0 26px -3px rgba(0, 237, 100, 0.5),
+    0 16px 36px -20px rgba(0, 0, 0, 0.9),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
 /* Reusable border-glow for non-panel chrome (dotted lines, badges, boxes, icons).
    .neon-glow = cool default · .neon-glow-green = live/signal · .neon-icon = icon halo. */
 .neon-glow {
-  box-shadow: 0 0 0 1px rgba(120, 180, 255, 0.22), 0 0 12px -2px rgba(52, 216, 232, 0.28);
+  border: 1px solid rgba(52, 216, 232, 0.45);
+  box-shadow: inset 0 0 12px -3px rgba(52, 216, 232, 0.5), 0 0 14px -3px rgba(52, 216, 232, 0.4);
 }
 .neon-glow-green {
-  box-shadow: 0 0 0 1px rgba(0, 237, 100, 0.4), 0 0 12px -2px rgba(0, 237, 100, 0.32);
+  border: 1px solid rgba(0, 237, 100, 0.55);
+  box-shadow: inset 0 0 12px -3px rgba(0, 237, 100, 0.5), 0 0 14px -3px rgba(0, 237, 100, 0.45);
 }
 .neon-icon {
   filter: drop-shadow(0 0 4px rgba(52, 216, 232, 0.55));
