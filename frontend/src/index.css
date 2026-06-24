@@ -79,6 +79,11 @@ main {
   border: 1px solid rgba(0, 237, 100, 0.55);
   box-shadow: inset 0 0 12px -3px rgba(0, 237, 100, 0.5), 0 0 14px -3px rgba(0, 237, 100, 0.45);
 }
+/* Dashed neon edge for "pending / not-yet-active" cards (e.g. agentless hosts). */
+.neon-dashed {
+  border: 1px dashed rgba(52, 216, 232, 0.45);
+  box-shadow: inset 0 0 14px -4px rgba(52, 216, 232, 0.35);
+}
 .neon-icon {
   filter: drop-shadow(0 0 4px rgba(52, 216, 232, 0.55));
 }

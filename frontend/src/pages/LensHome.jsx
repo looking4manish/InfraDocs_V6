@@ -97,7 +97,7 @@ function ProjectLensCard({ app, onOpen, reduce }) {
       variants={cardVariants(reduce)}
       whileHover={reduce ? undefined : { y: -2 }}
       transition={SPRING}
-      className="group text-left bg-bg-card border border-bg-hover rounded-2xl p-4 hover:bg-bg-elev hover:border-zinc-700 relative overflow-hidden"
+      className="group text-left neon-panel neon-panel-hover rounded-2xl p-4 hover:bg-bg-elev relative overflow-hidden"
     >
       <button type="button" onClick={() => onOpen(app.name)} className="absolute inset-0 z-0" aria-label={`Open ${app.name}`} />
       <span className="pointer-events-none absolute top-4 right-4 text-accent-soft opacity-0 -translate-x-1 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-200 text-sm">→</span>
@@ -184,7 +184,7 @@ function ServersLens({ apps, reduce }) {
               </span>
             </div>
             {h.live ? (
-              <div className="bg-bg-card border border-bg-hover rounded-2xl p-4">
+              <div className="neon-panel rounded-2xl p-4">
                 <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(120px,1fr))" }}>
                   <Fact k="apps" v={apps.length} />
                   <Fact k="exposed" v={apps.filter((a) => a.internet_exposed).length} />
@@ -194,7 +194,7 @@ function ServersLens({ apps, reduce }) {
                 </div>
               </div>
             ) : (
-              <div className="bg-bg-card border border-dashed border-bg-hover rounded-2xl p-4 text-[13px] text-zinc-500">
+              <div className="neon-dashed bg-bg-card/40 rounded-2xl p-4 text-[13px] text-zinc-500">
                 ◇ no agent yet{h.note ? ` — ${h.note}` : ""} <span className="text-zinc-600">(Phase 6)</span>
               </div>
             )}
