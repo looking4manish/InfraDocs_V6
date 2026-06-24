@@ -26,6 +26,23 @@ export default function Assets() {
     setParams(next);
   }
 
+  // Unfiltered fetch → distinct values to populate the filter dropdowns, so the
+  // options always reflect what actually exists (independent of the current filter).
+  const allQ = useQuery({
+    queryKey: ["assets", "filter-options"],
+    queryFn: () => endpoints.listAssets().then((r) => r.data),
+  });
+  const options = useMemo(() => {
+    const all = allQ.data?.assets || [];
+    const uniq = (key) =>
+      Array.from(new Set(all.map((a) => a[key]).filter(Boolean))).sort();
+    return {
+      category: uniq("category"),
+      project: uniq("project"),
+      status: uniq("status"),
+    };
+  }, [allQ.data]);
+
   const assets = useMemo(() => q.data?.assets || [], [q.data]);
   const stats = useMemo(() => {
     const cats = new Set(assets.map((a) => a.category));
@@ -49,15 +66,21 @@ export default function Assets() {
         stats={stats}
       />
 
-      <div className="flex flex-wrap gap-2 mb-3 text-sm">
+      <div className="flex flex-wrap gap-2 mb-3 text-sm items-center">
         {["category", "project", "status"].map((k) => (
-          <input
+          <select
             key={k}
             value={params.get(k) || ""}
             onChange={(e) => update(k, e.target.value)}
-            placeholder={`Filter by ${k}`}
-            className="bg-bg-card border border-bg-hover rounded-md px-2.5 py-1 text-xs focus:outline-none focus:border-accent/50 transition"
-          />
+            className="bg-bg-card border border-bg-hover rounded-md px-2 py-1 text-xs text-slate-200 focus:outline-none focus:border-accent/50 transition capitalize"
+          >
+            <option value="">All {k}</option>
+            {options[k].map((v) => (
+              <option key={v} value={v}>
+                {String(v).replace(/_/g, " ")}
+              </option>
+            ))}
+          </select>
         ))}
         {filtered && (
           <button
