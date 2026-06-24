@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams, Link } from "react-router-dom";
 import { endpoints } from "../api/client";
@@ -7,7 +6,7 @@ import UsageBar from "../components/UsageBar";
 
 function StatCard({ label, value, sub }) {
   return (
-    <div className="bg-bg-card border border-bg-hover rounded-lg p-3">
+    <div className="neon-panel rounded-lg p-3">
       <div className="text-[10px] uppercase tracking-wide text-slate-500">
         {label}
       </div>
@@ -86,7 +85,7 @@ export default function Storage() {
       </div>
 
       {/* Owner breakdown — quick visual */}
-      <div className="bg-bg-card border border-bg-hover rounded-lg p-4 mb-4">
+      <div className="neon-panel rounded-lg p-4 mb-4">
         <h2 className="text-sm font-semibold mb-3">Storage by owner</h2>
         {byOwner.map((o) => {
           const pct = totalBytes
@@ -158,7 +157,7 @@ export default function Storage() {
         </div>
       )}
 
-      <div className="bg-bg-card border border-bg-hover rounded-lg overflow-hidden">
+      <div className="neon-panel rounded-lg overflow-hidden">
         <div className="grid grid-cols-12 gap-2 px-3 py-2 text-xs uppercase tracking-wide text-slate-500 border-b border-bg-hover">
           <div className="col-span-2">Kind</div>
           <div className="col-span-4">Name / Path</div>

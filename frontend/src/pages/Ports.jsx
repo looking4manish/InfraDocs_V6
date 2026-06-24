@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useSearchParams, Link } from "react-router-dom";
 import { endpoints } from "../api/client";
@@ -22,7 +22,7 @@ function EvidenceBadges({ sources }) {
 
 function StatCard({ label, value }) {
   return (
-    <div className="bg-bg-card border border-bg-hover rounded-lg p-3">
+    <div className="neon-panel rounded-lg p-3">
       <div className="text-[10px] uppercase tracking-wide text-slate-500">
         {label}
       </div>
@@ -39,7 +39,7 @@ function ProbeWidget() {
   });
 
   return (
-    <section className="bg-bg-card border border-bg-hover rounded-lg p-4 mb-4">
+    <section className="neon-panel rounded-lg p-4 mb-4">
       <div className="flex items-end gap-3 flex-wrap mb-3">
         <div>
           <label className="text-[10px] uppercase tracking-wide text-slate-500 block mb-1">
@@ -168,7 +168,7 @@ export default function Ports() {
 
       <ProbeWidget />
 
-      <div className="bg-bg-card border border-bg-hover rounded-lg p-3 mb-3">
+      <div className="neon-panel rounded-lg p-3 mb-3">
         <div className="flex flex-wrap gap-2 items-end">
           <FilterPill
             label="state"
@@ -216,7 +216,7 @@ export default function Ports() {
         </div>
       </div>
 
-      <div className="bg-bg-card border border-bg-hover rounded-lg overflow-hidden">
+      <div className="neon-panel rounded-lg overflow-hidden">
         <div className="grid grid-cols-12 gap-2 px-3 py-2 text-xs uppercase tracking-wide text-slate-500 border-b border-bg-hover">
           <div className="col-span-2">Port</div>
           <div className="col-span-2">State</div>

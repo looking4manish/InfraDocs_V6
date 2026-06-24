@@ -39,7 +39,7 @@ export default function Scans() {
         </button>
       </div>
 
-      <div className="bg-bg-card border border-bg-hover rounded-lg overflow-hidden">
+      <div className="neon-panel rounded-lg overflow-hidden">
         <div className="grid grid-cols-12 gap-3 px-3 py-2 text-xs uppercase tracking-wide text-slate-500 border-b border-bg-hover">
           <div className="col-span-3">Scan</div>
           <div className="col-span-2">Status</div>
