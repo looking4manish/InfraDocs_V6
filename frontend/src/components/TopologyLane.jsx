@@ -38,8 +38,9 @@ function Node({ icon: Icon, kind, title, children, state, dashed, reduce }) {
       transition={SPRING}
       className={cn(
         "flex-none w-[188px] rounded-[13px] p-3.5",
-        "bg-bg-card border",
-        dashed ? "border-dashed border-amber-500/30" : "border-bg-hover hover:bg-bg-elev"
+        dashed
+          ? "bg-bg-card border border-dashed border-amber-500/30"
+          : "neon-panel hover:bg-bg-elev"
       )}
     >
       <div className="flex items-center gap-1.5 mb-2">
@@ -302,7 +303,7 @@ function LinkEvidence({ links }) {
       initial="hidden"
       whileInView="show"
       viewport={{ once: true, margin: "-60px" }}
-      className="bg-bg-card border border-bg-hover rounded-[13px] mt-5 overflow-hidden"
+      className="neon-panel rounded-[13px] mt-5 overflow-hidden"
     >
       <div className="flex items-center gap-1.5 px-4 py-3 border-b border-bg-hover">
         <Link2 size={13} className="text-zinc-600" />
