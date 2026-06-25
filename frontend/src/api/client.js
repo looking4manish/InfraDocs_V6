@@ -52,6 +52,11 @@ export const endpoints = {
     api.post("/api/auth/change-password", { new_password }),
   logout: () => api.post("/api/auth/logout"),
 
+  // first-run setup wizard
+  setupStatus: () => api.get("/api/setup/status"),
+  detectIp: () => api.get("/api/setup/detect-ip"),
+  completeSetup: (body) => api.post("/api/setup/complete", body),
+
   // assets (Phase 3)
   listAssets: (params = {}) => api.get("/api/assets/", { params }),
   assetCategories: () => api.get("/api/assets/categories"),

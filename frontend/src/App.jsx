@@ -3,6 +3,7 @@ import { BrowserRouter, Route, Routes, Outlet, Navigate, useParams, useLocation 
 import { AnimatePresence, motion } from "motion/react";
 import { endpoints, isAuthed, clearToken } from "./api/client";
 import { Login, ChangePassword } from "./pages/Login";
+import Setup from "./pages/Setup";
 import Header from "./components/Header";
 import DrawerProvider from "./components/DrawerProvider";
 import CommandPalette from "./components/CommandPalette";
@@ -51,18 +52,30 @@ function AppShell() {
 // Gates the whole app behind login. Verifies the stored token via /me, forces
 // a password change when flagged, and falls back to the login screen on 401.
 function AuthGate({ children }) {
-  const [status, setStatus] = useState("loading"); // loading | login | change | ready
+  // loading | login | change | setup | ready
+  const [status, setStatus] = useState("loading");
+
+  // After auth + password are OK, decide setup vs ready.
+  const afterPasswordOk = useCallback(async () => {
+    try {
+      const { data } = await endpoints.setupStatus();
+      setStatus(data.setup_complete ? "ready" : "setup");
+    } catch {
+      setStatus("ready"); // never block the app if status check fails
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     if (!isAuthed()) return setStatus("login");
     try {
       const { data } = await endpoints.me();
-      setStatus(data.must_change_password ? "change" : "ready");
+      if (data.must_change_password) return setStatus("change");
+      await afterPasswordOk();
     } catch {
       clearToken();
       setStatus("login");
     }
-  }, []);
+  }, [afterPasswordOk]);
 
   useEffect(() => {
     refresh();
@@ -75,11 +88,14 @@ function AuthGate({ children }) {
   if (status === "login")
     return (
       <Login
-        onLoggedIn={(d) => setStatus(d.must_change_password ? "change" : "ready")}
+        onLoggedIn={(d) =>
+          d.must_change_password ? setStatus("change") : afterPasswordOk()
+        }
       />
     );
   if (status === "change")
-    return <ChangePassword onDone={() => setStatus("ready")} />;
+    return <ChangePassword onDone={afterPasswordOk} />;
+  if (status === "setup") return <Setup onDone={() => setStatus("ready")} />;
   return children;
 }
 
