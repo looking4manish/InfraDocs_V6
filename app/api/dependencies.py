@@ -5,7 +5,7 @@ import secrets
 from functools import lru_cache
 from typing import Optional
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from app.core.config_loader import Config, load_config
@@ -35,33 +35,38 @@ def get_db() -> DBManager:
 
 
 def verify_auth(
+    authorization: Optional[str] = Header(None),
     credentials: Optional[HTTPBasicCredentials] = Depends(_basic),
-    cfg: Config = Depends(get_config),
+    db: DBManager = Depends(get_db),
 ) -> str:
     # Open-house mode: set INFRADOCS_AUTH_DISABLED=1 in .env to bypass auth.
-    # Any audit-log actor is recorded as the client-supplied username (or
-    # "anonymous" if no header at all), so actions are still attributable
-    # to whoever the client claimed to be.
     if _auth_disabled():
         return credentials.username if credentials else "anonymous"
 
-    if credentials is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing credentials",
-            headers={"WWW-Authenticate": "Basic"},
-        )
+    from app import auth as A  # lazy to avoid import cycle
 
-    expected_password = os.environ.get(cfg.auth.password_env) or cfg.auth.dev_password
+    # 1) Bearer session token (issued by /api/auth/login — the web path).
+    if authorization and authorization.lower().startswith("bearer "):
+        username = A.validate_session(db, authorization[7:].strip())
+        if username:
+            return username
 
-    # constant-time comparison
-    user_ok = secrets.compare_digest(credentials.username, cfg.auth.username)
-    pass_ok = secrets.compare_digest(credentials.password, expected_password)
+    # 2) HTTP Basic — web users (bcrypt) OR the bootstrap config credential.
+    if credentials is not None:
+        user = A.get_user(db, credentials.username)
+        if user and A.verify_password(credentials.password, user.get("password_hash", "")):
+            return credentials.username
+        # Bootstrap / service-account path: the config username+password. Lets
+        # curl, scanners, and the agent authenticate without the web login flow.
+        cfg = get_config()
+        expected = os.environ.get(cfg.auth.password_env) or cfg.auth.dev_password
+        if credentials.username == cfg.auth.username and secrets.compare_digest(
+            credentials.password, expected
+        ):
+            return credentials.username
 
-    if not (user_ok and pass_ok):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
-            headers={"WWW-Authenticate": "Basic"},
-        )
-    return credentials.username
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="authentication required",
+        headers={"WWW-Authenticate": "Basic"},
+    )

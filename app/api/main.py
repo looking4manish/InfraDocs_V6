@@ -11,8 +11,11 @@ from fastapi.middleware.cors import CORSMiddleware
 ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT / ".env", override=False)
 
+from app import auth as _auth  # noqa: E402
 from app.api.dependencies import get_config, get_db  # noqa: E402
-from app.api.routers import actions, applications, assets, health, ports, projects, scans, storage  # noqa: E402
+from app.api.routers import (  # noqa: E402
+    actions, applications, assets, auth, health, ports, projects, scans, storage,
+)
 from app.core.logger import setup_logger  # noqa: E402
 
 
@@ -22,6 +25,7 @@ async def lifespan(app: FastAPI):
     cfg = get_config()
     db = get_db()
     db.create_indexes()
+    _auth.seed_default_admin(db, cfg.auth.username)
     logger.info(f"API started for server '{cfg.server.id}'")
     try:
         yield
@@ -47,6 +51,7 @@ app.add_middleware(
 )
 
 app.include_router(health.router, prefix="/api", tags=["health"])
+app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(assets.router, prefix="/api/assets", tags=["assets"])
 app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
 app.include_router(applications.router, prefix="/api/applications", tags=["applications"])
