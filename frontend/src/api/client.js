@@ -70,6 +70,14 @@ export const endpoints = {
   listEndpoints: (server) =>
     api.get("/api/endpoints", { params: server ? { server } : {} }),
 
+  // AI layer
+  aiStatus: () => api.get("/api/ai/status"),
+  aiEnrich: (server) =>
+    api.post("/api/ai/enrich", null, { params: server ? { server } : {} }),
+  getAiInsights: () => api.get("/api/ai/insights"),
+  runAiInsights: (server) =>
+    api.post("/api/ai/insights", null, { params: server ? { server } : {} }),
+
   // applications (Phase 5+ correlated docs)
   listApplications: (params = {}) =>
     api.get("/api/applications/list", { params }),

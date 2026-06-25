@@ -33,6 +33,9 @@ export default function Setup({ onDone }) {
   const [token, setToken] = useState("");
   const [ip, setIp] = useState(null);
   const [detecting, setDetecting] = useState(false);
+  const [aiEndpoint, setAiEndpoint] = useState("");
+  const [aiKey, setAiKey] = useState("");
+  const [aiModel, setAiModel] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -60,6 +63,9 @@ export default function Setup({ onDone }) {
         domain: domain || null,
         primary_url: role === "secondary" ? primaryUrl || null : null,
         join_token: role === "secondary" ? joinToken || null : null,
+        ai_endpoint: aiEndpoint || null,
+        ai_key: aiKey || null,
+        ai_model: aiModel || null,
       });
       onDone();
     } catch (e) {
@@ -156,6 +162,22 @@ export default function Setup({ onDone }) {
             <input className={field} placeholder="Cloudflare tunnel token"
               value={token} onChange={(e) => setToken(e.target.value)} />
           )}
+        </Section>
+
+        <Section n="4" title="AI labeling (optional)">
+          <div className="text-[12px] text-zinc-500 -mt-1">
+            Any OpenAI-compatible endpoint (OpenAI, or a local Ollama) to auto-identify
+            unknown services. Leave blank to skip.
+          </div>
+          <input className={field}
+            placeholder="Endpoint — e.g. https://api.openai.com/v1 or http://localhost:11434/v1"
+            value={aiEndpoint} onChange={(e) => setAiEndpoint(e.target.value)} />
+          <div className="flex gap-2">
+            <input className={field} type="password" placeholder="API key (blank for local)"
+              value={aiKey} onChange={(e) => setAiKey(e.target.value)} />
+            <input className={field} placeholder="Model — e.g. gpt-4o-mini"
+              value={aiModel} onChange={(e) => setAiModel(e.target.value)} />
+          </div>
         </Section>
 
         {err && <div className="text-rose-400 text-xs">{err}</div>}

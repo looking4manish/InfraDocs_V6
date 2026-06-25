@@ -149,11 +149,15 @@ class CompleteRequest(BaseModel):
     domain: Optional[str] = None
     primary_url: Optional[str] = None    # for secondary
     join_token: Optional[str] = None     # for secondary
+    # Optional AI labeling — any OpenAI-compatible endpoint (OpenAI / local Ollama / …).
+    ai_endpoint: Optional[str] = None
+    ai_key: Optional[str] = None
+    ai_model: Optional[str] = None
 
 
 @router.post("/complete")
 def complete(req: CompleteRequest, actor: str = Depends(verify_auth), db: DBManager = Depends(get_db)):
-    _save_settings(db, {
+    patch = {
         "setup_complete": True,
         "server_name": req.server_name,
         "role": req.role,
@@ -162,5 +166,13 @@ def complete(req: CompleteRequest, actor: str = Depends(verify_auth), db: DBMana
         "primary_url": req.primary_url,
         "join_token": req.join_token,
         "completed_by": actor,
-    })
+    }
+    # Only overwrite AI config when provided (so re-running setup doesn't wipe it).
+    if req.ai_endpoint is not None:
+        patch["ai_endpoint"] = req.ai_endpoint
+    if req.ai_key:
+        patch["ai_key"] = req.ai_key
+    if req.ai_model:
+        patch["ai_model"] = req.ai_model
+    _save_settings(db, patch)
     return {"ok": True, "setup_complete": True}

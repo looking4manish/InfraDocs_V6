@@ -9,31 +9,13 @@ from fastapi import APIRouter, Depends
 
 from app.api.dependencies import get_db, verify_auth
 from app.core.db_manager import DBManager
+from app.core.recognize import recognize
 
 router = APIRouter()
 
-# Well-known services by port — generic recognition (name, kind, is_web_ui).
-KNOWN_PORTS = {
-    80: ("HTTP", "web", True), 443: ("HTTPS", "web", True), 8080: ("HTTP-alt", "web", True),
-    8000: ("web app", "web", True), 8081: ("web app", "web", True), 3000: ("web app", "web", True),
-    5000: ("web app", "web", True), 8443: ("HTTPS-alt", "web", True), 5173: ("Vite dev server", "web", True),
-    9090: ("Prometheus / Cockpit", "monitoring", True), 9100: ("node-exporter", "monitoring", True),
-    3001: ("Grafana", "monitoring", True), 9091: ("Pushgateway", "monitoring", True),
-    5601: ("Kibana", "monitoring", True), 9093: ("Alertmanager", "monitoring", True),
-    27017: ("MongoDB", "database", False), 27018: ("MongoDB", "database", False),
-    27028: ("MongoDB (mongot)", "database", False),
-    5432: ("PostgreSQL", "database", False), 3306: ("MySQL", "database", False),
-    6379: ("Redis", "database", False), 9200: ("Elasticsearch", "database", True),
-    6333: ("Qdrant", "database", True), 6334: ("Qdrant gRPC", "database", False),
-    8086: ("InfluxDB", "database", True), 2019: ("Caddy admin API", "infra", False),
-}
 # Wider scope = more reachable; we keep the widest address per port.
 _SCOPE_RANK = {"public": 6, "all-interfaces": 5, "tailnet": 4, "private-lan": 3,
                "host": 2, "localhost": 1, "unknown": 0, "private": 0}
-
-
-def _recognize(port: Optional[int]):
-    return KNOWN_PORTS.get(port)
 
 
 def _ip_of(addr: str) -> str:
@@ -105,6 +87,17 @@ def list_endpoints(server: Optional[str] = None, db: DBManager = Depends(get_db)
     out.extend(by_host.values())
 
     # 2) Listening ports → standalone UIs / DBs (dedup by port, keep widest address).
+    #    Recognized via container image (docker-published ports) + process, then the
+    #    cached AI labels (Tier 2) for anything still unknown.
+    port_image = {}
+    for c in db.db.assets.find({**q, "category": "docker_container"}):
+        cm = c.get("metadata", {}) or {}
+        img = cm.get("image") or cm.get("image_name")
+        for hp in cm.get("host_ports") or []:
+            if img:
+                port_image.setdefault(hp, img)
+    ai_labels = {r["_id"]: r for r in db.db.ai_labels.find({})}
+
     by_port = {}
     for a in db.db.assets.find({**q, "category": "network_port"}):
         m = a.get("metadata", {}) or {}
@@ -122,20 +115,31 @@ def list_endpoints(server: Optional[str] = None, db: DBManager = Depends(get_db)
 
     for d in by_port.values():
         a, m, port, scope = d["asset"], d["m"], d["port"], d["scope"]
-        rec = _recognize(port)
+        proc, image = m.get("process"), port_image.get(d["port"])
+        rec = recognize(port=port, image=image, process=proc)
+        ai_lbl = None
+        if not rec:
+            sig = ("image:" + image) if image else (
+                ("proc:" + proc) if proc and proc not in ("unknown", "docker-proxy")
+                else f"port:{port}")
+            ai_lbl = ai_labels.get(sig)
         fronted = port in upstream_ports
-        is_web = bool(rec and rec[2]) or fronted
-        if not is_web and not rec:
-            continue   # noise: unrecognised non-web port
+        kind = rec[1] if rec else (ai_lbl.get("kind") if ai_lbl else "web")
+        label = rec[0] if rec else (ai_lbl.get("label") if ai_lbl else None)
+        is_web = bool(rec and rec[2]) or fronted or (kind in ("web", "monitoring", "app", "proxy"))
+        if not is_web and not rec and not ai_lbl:
+            continue   # genuinely unknown non-web port
         out.append({
             "url": f"http://{_browsable(d['ip'])}:{port}" if is_web else None,
             "host": f"{d['ip'] or 'localhost'}:{port}",
-            "kind": rec[1] if rec else "web",
+            "kind": kind,
             "server": a.get("server_id"),
-            "service": a.get("project") or (rec[0] if rec else (m.get("process") or "System")),
+            "service": a.get("project") or label or (proc or "System"),
             "via": "reverse-proxy backend" if fronted else "direct port",
-            "scope": scope, "recognized": rec[0] if rec else None,
-            "process": m.get("process"), "access": _port_note(scope, fronted, rec),
+            "scope": scope, "recognized": label, "ai": bool(ai_lbl),
+            "purpose": ai_lbl.get("purpose") if ai_lbl else None,
+            "process": proc,
+            "access": _port_note(scope, fronted, (label, kind, is_web) if label else None),
         })
 
     out.sort(key=lambda e: (e["scope"] != "public", e["kind"], e.get("service") or "", e["host"]))
