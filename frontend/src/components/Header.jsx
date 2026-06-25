@@ -35,6 +35,12 @@ export default function Header() {
     queryFn: () => endpoints.listApplications().then((r) => r.data),
     refetchInterval: 120000,
   });
+  const health = useQuery({
+    queryKey: ["health"],
+    queryFn: () => endpoints.health().then((r) => r.data),
+    staleTime: 300000,
+  });
+  const serverName = health.data?.server_name || health.data?.server || "server";
 
   const lastScanAt = parseScanTime(
     normalizeList(scans.data, ["scans", "items", "results"])[0]
@@ -67,7 +73,7 @@ export default function Header() {
           fresh.level === "warn" && "bg-amber-400",
           fresh.level === "bad" && "bg-red-400"
         )} />
-        oci · {fresh.label}
+        {serverName} · {fresh.label}
       </span>
 
       <button

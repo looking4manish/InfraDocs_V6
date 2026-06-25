@@ -67,11 +67,19 @@ export function freshness(lastScanAt) {
   return { label, level: m > 2880 ? "bad" : m > 720 ? "warn" : "ok" };
 }
 
+// Naive timestamps (no timezone) come from Mongo/Python as UTC — mark them so
+// Date.parse doesn't read them as browser-local, which skews ages by the TZ
+// offset (e.g. "5h ago" right after a scan when the browser is UTC+5:30).
+function parseUTC(s) {
+  if (typeof s === "string" && !/([zZ]|[+-]\d{2}:?\d{2})$/.test(s)) s = s + "Z";
+  return Date.parse(s);
+}
+
 export function parseScanTime(scan) {
   for (const k of ["finished_at", "completed_at", "ended_at", "started_at",
                    "created_at", "timestamp", "time"]) {
     if (scan?.[k]) {
-      const t = Date.parse(scan[k]);
+      const t = parseUTC(scan[k]);
       if (!Number.isNaN(t)) return t;
     }
   }
