@@ -1,5 +1,8 @@
+import { useEffect, useState, useCallback } from "react";
 import { BrowserRouter, Route, Routes, Outlet, Navigate, useParams, useLocation } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
+import { endpoints, isAuthed, clearToken } from "./api/client";
+import { Login, ChangePassword } from "./pages/Login";
 import Header from "./components/Header";
 import DrawerProvider from "./components/DrawerProvider";
 import CommandPalette from "./components/CommandPalette";
@@ -45,8 +48,44 @@ function AppShell() {
   );
 }
 
+// Gates the whole app behind login. Verifies the stored token via /me, forces
+// a password change when flagged, and falls back to the login screen on 401.
+function AuthGate({ children }) {
+  const [status, setStatus] = useState("loading"); // loading | login | change | ready
+
+  const refresh = useCallback(async () => {
+    if (!isAuthed()) return setStatus("login");
+    try {
+      const { data } = await endpoints.me();
+      setStatus(data.must_change_password ? "change" : "ready");
+    } catch {
+      clearToken();
+      setStatus("login");
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const onUnauth = () => setStatus("login");
+    window.addEventListener("ifd-unauthorized", onUnauth);
+    return () => window.removeEventListener("ifd-unauthorized", onUnauth);
+  }, [refresh]);
+
+  if (status === "loading") return <div className="min-h-screen bg-[#0a0e14]" />;
+  if (status === "login")
+    return (
+      <Login
+        onLoggedIn={(d) => setStatus(d.must_change_password ? "change" : "ready")}
+      />
+    );
+  if (status === "change")
+    return <ChangePassword onDone={() => setStatus("ready")} />;
+  return children;
+}
+
 export default function App() {
   return (
+    <AuthGate>
     <BrowserRouter>
       <DrawerProvider>
         <CommandPalette />
@@ -68,5 +107,6 @@ export default function App() {
         </Routes>
       </DrawerProvider>
     </BrowserRouter>
+    </AuthGate>
   );
 }

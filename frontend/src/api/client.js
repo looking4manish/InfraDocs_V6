@@ -1,22 +1,20 @@
 import axios from "axios";
 
-// No hardcoded password fallback — the deployed JS bundle must not contain
-// real credentials. If localStorage is empty (first visit, post-cache-clear,
-// fresh browser), we send an empty password; the API returns 401 with a
-// WWW-Authenticate: Basic header, and the browser shows its native auth
-// prompt. setCreds() persists what the user types for subsequent loads.
-const DEV_USER = "msinha";
+// Session-token auth: login → opaque token → sent as `Authorization: Bearer`.
+// No credentials ever live in the JS bundle or persist beyond the token.
+const TOKEN_KEY = "ifd_token";
 
-export function getCreds() {
-  return {
-    username: localStorage.getItem("ifd_user") || DEV_USER,
-    password: localStorage.getItem("ifd_pass") || "",
-  };
+export function getToken() {
+  return localStorage.getItem(TOKEN_KEY) || "";
 }
-
-export function setCreds(username, password) {
-  localStorage.setItem("ifd_user", username);
-  localStorage.setItem("ifd_pass", password);
+export function setToken(t) {
+  localStorage.setItem(TOKEN_KEY, t);
+}
+export function clearToken() {
+  localStorage.removeItem(TOKEN_KEY);
+}
+export function isAuthed() {
+  return !!getToken();
 }
 
 export const api = axios.create({
@@ -25,25 +23,19 @@ export const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
-  const { username, password } = getCreds();
-  const token = btoa(`${username}:${password}`);
-  config.headers.Authorization = `Basic ${token}`;
+  const t = getToken();
+  if (t) config.headers.Authorization = `Bearer ${t}`;
   return config;
 });
 
-// On 401, persist the failed creds → "" so the next request from this page
-// load also fails cleanly (instead of looping with stale auth). The browser
-// catches the 401+WWW-Authenticate and shows its native prompt.
+// On 401, drop the (now invalid/expired) token and let the app fall back to
+// the login screen instead of looping with a dead session.
 api.interceptors.response.use(
   (r) => r,
   (err) => {
-    if (err?.response?.status === 401) {
-      const { password } = getCreds();
-      if (password) {
-        // Persisted creds are wrong — clear them so the next request triggers
-        // the browser auth dialog instead of silently reusing the bad pass.
-        localStorage.removeItem("ifd_pass");
-      }
+    if (err?.response?.status === 401 && getToken()) {
+      clearToken();
+      window.dispatchEvent(new Event("ifd-unauthorized"));
     }
     return Promise.reject(err);
   }
@@ -51,6 +43,14 @@ api.interceptors.response.use(
 
 export const endpoints = {
   health: () => api.get("/api/health"),
+
+  // auth
+  login: (username, password) =>
+    api.post("/api/auth/login", { username, password }),
+  me: () => api.get("/api/auth/me"),
+  changePassword: (new_password) =>
+    api.post("/api/auth/change-password", { new_password }),
+  logout: () => api.post("/api/auth/logout"),
 
   // assets (Phase 3)
   listAssets: (params = {}) => api.get("/api/assets/", { params }),

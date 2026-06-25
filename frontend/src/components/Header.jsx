@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { RefreshCw, Search, TriangleAlert, CircleAlert } from "lucide-react";
-import { endpoints } from "../api/client";
+import { RefreshCw, Search, TriangleAlert, CircleAlert, LogOut } from "lucide-react";
+import { endpoints, clearToken } from "../api/client";
 import { cn } from "../lib/cn";
 import {
   computeAttention, freshness, normalizeList, parseScanTime,
@@ -129,6 +129,18 @@ export default function Header() {
       </div>
 
       <ThemeSwitcher />
+
+      <button
+        onClick={async () => {
+          try { await endpoints.logout(); } catch { /* ignore */ }
+          clearToken();
+          window.location.reload();
+        }}
+        title="Sign out"
+        className="p-1.5 rounded-md text-zinc-500 hover:text-zinc-200 hover:bg-bg-elev transition"
+      >
+        <LogOut size={15} />
+      </button>
 
       <button
         onClick={() => triggerScan.mutate()}
