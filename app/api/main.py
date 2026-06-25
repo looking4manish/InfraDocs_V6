@@ -14,7 +14,7 @@ load_dotenv(ROOT / ".env", override=False)
 from app import auth as _auth  # noqa: E402
 from app.api.dependencies import get_config, get_db  # noqa: E402
 from app.api.routers import (  # noqa: E402
-    actions, applications, assets, auth, health, ports, projects, scans, setup, storage,
+    actions, applications, assets, auth, federation, health, ports, projects, scans, setup, storage,
 )
 from app.core.logger import setup_logger  # noqa: E402
 
@@ -53,6 +53,7 @@ app.add_middleware(
 app.include_router(health.router, prefix="/api", tags=["health"])
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(setup.router, prefix="/api/setup", tags=["setup"])
+app.include_router(federation.router, prefix="/api/federation", tags=["federation"])
 app.include_router(assets.router, prefix="/api/assets", tags=["assets"])
 app.include_router(projects.router, prefix="/api/projects", tags=["projects"])
 app.include_router(applications.router, prefix="/api/applications", tags=["applications"])

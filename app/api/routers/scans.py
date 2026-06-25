@@ -85,6 +85,17 @@ def _run_scan_job(scan_id: str, cfg: Config):
         projects_root=cfg.paths.projects_root, valid_projects=valid_projects,
     ))
 
+    # Secondary mode: push this server's scan up to the primary (outbound → NAT-OK).
+    fed = db.db.settings.find_one({"_id": "app"}) or {}
+    if fed.get("role") == "secondary" and fed.get("primary_url") and fed.get("join_token"):
+        try:
+            from app import federation as _federation
+            _federation.push_to_primary(
+                fed["primary_url"], fed["join_token"], cfg.server.id, all_assets, applications,
+            )
+        except Exception:
+            pass  # never fail a scan because the primary is unreachable
+
     finished = datetime.now(timezone.utc)
     db.db.scan_logs.update_one(
         {"scan_id": scan_id},
