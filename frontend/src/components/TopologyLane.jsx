@@ -125,10 +125,19 @@ export default function TopologyLane({ app, storage }) {
   const volumes = storage?.storage || [];
 
   if (!nginx && !container) {
+    const units = app?.systemd_units?.length || 0;
+    if (units > 0) {
+      // Systemd-only service (e.g. a backup unit) — genuinely has no web/container
+      // flow, so don't imply the scan failed.
+      return (
+        <div className="text-[12.5px] text-zinc-400 bg-white/[0.02] border border-white/10 rounded-xl px-4 py-3">
+          Runs as {units} systemd unit{units > 1 ? "s" : ""} — no web or container flow to map.
+        </div>
+      );
+    }
     return (
       <div className="text-[12.5px] text-amber-300/90 bg-amber-500/5 border border-amber-500/20 rounded-xl px-4 py-3">
-        No topology evidence yet — this application has no nginx or container detail.
-        Trigger a scan to populate the lane.
+        No topology evidence yet — no nginx or container detail. Trigger a scan to populate the lane.
       </div>
     );
   }
