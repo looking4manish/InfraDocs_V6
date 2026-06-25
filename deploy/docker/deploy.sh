@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# InfraDocs one-shot deploy helper. Run it from anywhere:
+# InfraDocs one-shot deploy. Run it on the server:
 #   bash deploy/docker/deploy.sh
-# It checks Docker, writes deploy/docker/.env interactively (first run only),
-# then builds + starts the stack and prints how to reach it. Re-runnable.
+# It installs Docker if needed, writes a minimal deploy/docker/.env, builds +
+# starts the stack, and tells you how to reach the first-run WIZARD (where you
+# fill in everything else). Re-runnable. Defaults are fine for a first test.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,54 +20,31 @@ if ! command -v docker >/dev/null 2>&1; then
   if [[ "${a:-Y}" =~ ^[Yy] ]]; then
     curl -fsSL https://get.docker.com | sudo sh
     sudo usermod -aG docker "$USER" || true
-    warn "Docker installed. If the next step asks for sudo, that's the group not"
-    warn "being active yet — log out/in afterwards to run docker without sudo."
+    warn "Docker installed — if the build asks for sudo, the group isn't active"
+    warn "yet; log out/in afterwards to run docker without sudo."
   else
     echo "Docker is required. Aborting."; exit 1
   fi
 fi
-# Use sudo for compose only if this shell can't talk to the daemon yet.
 if docker info >/dev/null 2>&1; then DC=(docker compose); else DC=(sudo docker compose); fi
 "${DC[@]}" version >/dev/null 2>&1 || { echo "docker compose plugin missing"; exit 1; }
 
-# --- 2. Config (.env) ----------------------------------------------------
+# --- 2. Minimal .env (you configure the rest in the wizard) --------------
 if [[ -f .env ]]; then
-  say ".env already exists — reusing it. (Delete deploy/docker/.env to reconfigure.)"
+  say ".env exists — reusing it. (Delete deploy/docker/.env to reconfigure.)"
 else
-  say "Let's configure this deployment."
+  say "Minimal config — everything else is set in the web wizard after login."
   SERVER_ID=$(ask "Server id (short, e.g. oci-p)" "$(hostname -s 2>/dev/null || echo infradocs)")
-  SERVER_NAME=$(ask "Display name" "$SERVER_ID")
-  PROJECTS_ROOT=$(ask "Projects root (where your apps live)" "$HOME/projects")
-
-  while :; do
-    read -rsp "Initial admin password (min 8 chars): " ADMIN_PASSWORD; echo
-    [[ ${#ADMIN_PASSWORD} -ge 8 ]] && break || warn "too short"
-  done
-
-  echo "How will the UI be reached from the internet?"
-  echo "  1) localhost / Tailscale  (default — no domain; use 'tailscale serve' after)"
-  echo "  2) Domain + Caddy auto-TLS (point your DNS at this box's PUBLIC IP, open 80/443)"
-  echo "  3) Cloudflare Tunnel       (works behind NAT/CGNAT)"
-  EX=$(ask "Choose 1-3" "1")
-  # :80 = serve plain HTTP on the web port (clean for curl / tailscale / cloudflare,
-  # which terminate TLS themselves). A real domain → Caddy auto-provisions TLS on 443.
-  DOMAIN=":80"; COMPOSE_PROFILES=""; CF_TUNNEL_TOKEN=""
-  case "$EX" in
-    2) DOMAIN=$(ask "Domain (e.g. infra.you.com)" "infra.example.com") ;;
-    3) COMPOSE_PROFILES="cloudflare"
-       CF_TUNNEL_TOKEN=$(ask "Cloudflare tunnel token" "") ;;
-  esac
-
-  # Write .env with printf so special chars in the password stay literal.
+  PROJECTS_ROOT=$(ask "Where your apps live (Projects root)" "$HOME/projects")
   {
-    printf 'SERVER_ID=%s\n'        "$SERVER_ID"
-    printf 'SERVER_NAME=%s\n'      "$SERVER_NAME"
+    printf 'SERVER_ID=%s\n'      "$SERVER_ID"
+    printf 'SERVER_NAME=%s\n'    "$SERVER_ID"
     printf 'ADMIN_USER=admin\n'
-    printf 'ADMIN_PASSWORD=%s\n'   "$ADMIN_PASSWORD"
-    printf 'PROJECTS_ROOT=%s\n'    "$PROJECTS_ROOT"
-    printf 'DOMAIN=%s\n'           "$DOMAIN"
-    printf 'COMPOSE_PROFILES=%s\n' "$COMPOSE_PROFILES"
-    printf 'CF_TUNNEL_TOKEN=%s\n'  "$CF_TUNNEL_TOKEN"
+    printf 'ADMIN_PASSWORD=Changeme001\n'   # forced-changed on first login
+    printf 'PROJECTS_ROOT=%s\n'  "$PROJECTS_ROOT"
+    printf 'DOMAIN=:80\n'        # plain HTTP on WEB_PORT; pick real exposure in the wizard
+    printf 'COMPOSE_PROFILES=\n'
+    printf 'CF_TUNNEL_TOKEN=\n'
     printf 'TS_AUTHKEY=\n'
     printf 'WEB_PORT=8081\n'
     printf 'WEB_TLS_PORT=8443\n'
@@ -78,34 +56,40 @@ else
 fi
 
 # --- 3. Build + start ----------------------------------------------------
-say "Building + starting the stack (first run can take a few minutes)…"
+say "Building + starting (first run pulls images + builds the UI — a few minutes)…"
 "${DC[@]}" --env-file .env up -d --build
 
-# --- 4. Wait for the API + report ---------------------------------------
+# --- 4. Wait for health --------------------------------------------------
 get() { grep -E "^$1=" .env | cut -d= -f2-; }
 API_PORT="$(get API_PORT)"; API_PORT="${API_PORT:-8090}"
 WEB_PORT="$(get WEB_PORT)"; WEB_PORT="${WEB_PORT:-8081}"
-
-say "Waiting for the API to come up…"
+say "Waiting for the API…"
 ok=""
 for _ in $(seq 1 40); do
-  if [[ "$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${API_PORT}/api/health" || true)" == "200" ]]; then
-    ok=1; break
-  fi
+  [[ "$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:${API_PORT}/api/health" || true)" == "200" ]] && { ok=1; break; }
   sleep 2
 done
-
 "${DC[@]}" --env-file .env ps
-if [[ -n "$ok" ]]; then say "InfraDocs is up. 🎉"; else warn "API not healthy yet — check: ${DC[*]} --env-file .env logs api"; fi
+[[ -n "$ok" ]] && say "InfraDocs is up. 🎉" || warn "API not ready — check: ${DC[*]} --env-file .env logs api"
 
+# --- 5. How to reach the wizard -----------------------------------------
+HOSTIP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 cat <<EOF
 
-  Local UI:    http://localhost:${WEB_PORT}/
-  First login: admin / Changeme001   (you'll be forced to set a new one)
+────────────────────────────────────────────────────────────────────
+ OPEN THE SETUP WIZARD
+────────────────────────────────────────────────────────────────────
+ This box is headless, so reach the UI one of these ways:
 
-  Reach it from another device on your tailnet:
-     sudo tailscale serve --bg ${WEB_PORT}
-     tailscale serve status        # prints the https://<host>.ts.net URL
+ 1) SSH tunnel from YOUR laptop (simplest — nothing to open on the server):
+      ssh -L ${WEB_PORT}:localhost:${WEB_PORT} ${USER}@${HOSTIP:-<server-ip>}
+    then browse:  http://localhost:${WEB_PORT}
 
-  Manage:  ${DC[*]} --env-file .env ps | logs -f | down
+ 2) Tailscale (if this box is on your tailnet):
+      sudo tailscale serve --bg ${WEB_PORT}
+      tailscale serve status     # prints the https://<host>.ts.net URL
+
+ First login:  admin / Changeme001   → you'll set a new password, then the wizard.
+ Manage:       ${DC[*]} --env-file .env  ps | logs -f | down
+────────────────────────────────────────────────────────────────────
 EOF
