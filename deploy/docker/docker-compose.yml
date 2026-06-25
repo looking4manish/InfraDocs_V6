@@ -66,6 +66,44 @@ services:
     depends_on:
       - api
 
+  # --- Exposure backends — opt-in via COMPOSE_PROFILES in .env -------------
+  # Cloudflare Tunnel: a public URL on ANY host (incl. behind NAT/CGNAT). Make a
+  # tunnel in CF Zero Trust, route your hostname -> http://localhost:${WEB_PORT},
+  # set CF_TUNNEL_TOKEN + COMPOSE_PROFILES=cloudflare.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: ["cloudflare"]
+    restart: unless-stopped
+    network_mode: host
+    command: tunnel --no-autoupdate run --token ${CF_TUNNEL_TOKEN:-}
+    depends_on:
+      - web
+
+  # Tailscale Funnel: a public URL with NO domain (https://<host>.<tailnet>.ts.net).
+  # Needs Funnel+HTTPS enabled on the tailnet and a reusable auth key as TS_AUTHKEY;
+  # set COMPOSE_PROFILES=tailscale.
+  tailscale:
+    image: tailscale/tailscale:latest
+    profiles: ["tailscale"]
+    restart: unless-stopped
+    network_mode: host
+    cap_add: ["NET_ADMIN"]
+    environment:
+      TS_AUTHKEY: "${TS_AUTHKEY:-}"
+      WEB_PORT: "${WEB_PORT:-8081}"
+      TS_HOSTNAME: "${SERVER_ID:-infradocs}"
+    volumes:
+      - tailscale_state:/var/lib/tailscale
+    command: >
+      sh -c "tailscaled --tun=userspace-networking --state=/var/lib/tailscale/tailscaled.state &
+             sleep 3 &&
+             tailscale up --authkey=\"$$TS_AUTHKEY\" --hostname=\"$$TS_HOSTNAME\" &&
+             tailscale funnel --bg $$WEB_PORT &&
+             wait"
+    depends_on:
+      - web
+
 volumes:
   mongo_data:
   caddy_data:
+  tailscale_state:
