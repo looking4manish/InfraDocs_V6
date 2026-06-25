@@ -38,6 +38,9 @@ class MongoDBConfig(BaseModel):
 
 class PathsConfig(BaseModel):
     projects_root: str
+    # Extra roots to HUNT for scattered projects (marker-based: docker-compose.yml/.git).
+    scan_roots: Optional[List[str]] = None
+    scan_depth: int = 2
     data_root: str
     logs_dir: str = "logs"
     artifacts_dir: str = "artifacts"
@@ -90,6 +93,11 @@ def load_config(config_path: str = "config.yml") -> Config:
     _env_override(raw, "paths", "projects_root", "INFRADOCS_PROJECTS_ROOT")
     _env_override(raw, "mongodb", "database", "INFRADOCS_DB")
     _env_override(raw, "auth", "username", "INFRADOCS_API_USERNAME")
+
+    # Comma-separated extra roots to hunt for scattered projects.
+    roots_env = os.environ.get("INFRADOCS_SCAN_ROOTS")
+    if roots_env and isinstance(raw.get("paths"), dict):
+        raw["paths"]["scan_roots"] = [r.strip() for r in roots_env.split(",") if r.strip()]
 
     return Config(**raw)
 

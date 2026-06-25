@@ -15,7 +15,9 @@ from app.core.config_loader import load_config
 from app.core.db_manager import DBManager
 from app.core.logger import get_scan_logger, setup_logger
 import uuid
-from app.core.project_detector import ProjectDetector
+from app.core.project_detector import (
+    ProjectDetector, attach_root_paths, discover_docker_projects,
+)
 from app.correlator import SYSTEM_BUCKET, correlate
 from app.ports_registry import build_ports_registry
 from app.scanners.registry import SCANNERS
@@ -65,7 +67,12 @@ def run_scan(args):
     cfg = load_config(args.config)
     logger = get_scan_logger("manual")
 
-    pd = ProjectDetector(projects_root=cfg.paths.projects_root)
+    pd = ProjectDetector(
+        projects_root=cfg.paths.projects_root,
+        scan_roots=cfg.paths.scan_roots,
+        scan_depth=cfg.paths.scan_depth,
+        discovered=discover_docker_projects(),
+    )
     scanners = []
     for name in cfg.scanning.enabled_scanners:
         cls = SCANNERS.get(name)
@@ -122,6 +129,7 @@ def run_scan(args):
         server_id=cfg.server.id,
         projects_root=cfg.paths.projects_root,
     )
+    attach_root_paths(applications, pd.project_paths())
     apps_written = db.replace_applications(applications)
 
     # Ports registry (Phase 7B) — evidence-based port inventory.

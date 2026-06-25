@@ -11,9 +11,17 @@ export default function ProjectCard({ project }) {
         <h3 className="font-semibold text-base">{project.name}</h3>
         <HealthBadge score={project.health_score} />
       </div>
-      <div className="text-xs text-slate-400 mb-3">
+      <div className="text-xs text-slate-400 mb-1">
         {project.asset_count} assets
       </div>
+      {project.root_path && (
+        <div
+          className="text-[10px] font-mono text-zinc-500 mb-3 truncate"
+          title={project.root_path}
+        >
+          {project.root_path}
+        </div>
+      )}
       <div className="flex flex-wrap gap-1">
         {Object.entries(project.categories || {}).map(([cat, count]) => (
           <span

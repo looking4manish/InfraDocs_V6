@@ -49,6 +49,13 @@ def list_projects(
         {"$sort": {"_id": 1}},
     ]
     rows = list(db.db.assets.aggregate(pipeline))
+    # Full root path per project (discovered + tagged at scan time).
+    root_paths = {
+        a["name"]: a.get("root_path")
+        for a in db.db.applications.find(
+            {"root_path": {"$exists": True}}, {"name": 1, "root_path": 1}
+        )
+    }
     out = []
     for r in rows:
         name = r["_id"] or "System"
@@ -63,6 +70,7 @@ def list_projects(
                 "categories": by_cat,
                 "health_score": score,
                 "is_healthy": score >= 80,
+                "root_path": root_paths.get(name),
             }
         )
     return {"count": len(out), "projects": out}

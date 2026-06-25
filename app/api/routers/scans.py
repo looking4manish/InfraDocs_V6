@@ -10,7 +10,9 @@ from pymongo import DESCENDING
 from app.api.dependencies import get_config, get_db, verify_auth
 from app.core.config_loader import Config
 from app.core.db_manager import DBManager
-from app.core.project_detector import ProjectDetector
+from app.core.project_detector import (
+    ProjectDetector, attach_root_paths, discover_docker_projects,
+)
 from app.correlator import SYSTEM_BUCKET, correlate
 from app.ports_registry import build_ports_registry
 from app.scanners.registry import SCANNERS
@@ -40,7 +42,12 @@ def _run_scan_job(scan_id: str, cfg: Config):
         upsert=True,
     )
 
-    pd = ProjectDetector(projects_root=cfg.paths.projects_root)
+    pd = ProjectDetector(
+        projects_root=cfg.paths.projects_root,
+        scan_roots=cfg.paths.scan_roots,
+        scan_depth=cfg.paths.scan_depth,
+        discovered=discover_docker_projects(),
+    )
     per_scanner = []
     all_assets = []
     failed = []
@@ -72,6 +79,7 @@ def _run_scan_job(scan_id: str, cfg: Config):
         server_id=cfg.server.id,
         projects_root=cfg.paths.projects_root,
     )
+    attach_root_paths(applications, pd.project_paths())
     apps_written = db.replace_applications(applications)
 
     # Ports + storage registries — the UI "Scan now" was leaving these stale
