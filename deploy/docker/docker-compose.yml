@@ -53,14 +53,14 @@ services:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.web
     restart: unless-stopped
-    ports:
-      - "${WEB_PORT:-8081}:80"
-      - "${WEB_TLS_PORT:-8443}:443"
+    # Host networking so Caddy reaches the host-net API at localhost — avoids the
+    # docker-bridge -> host hop that locked-down firewalls (e.g. OCI) drop. Caddy
+    # listens on the port in DOMAIN (":8081" = plain HTTP on 8081; a real domain =
+    # auto-TLS on 80/443). No published ports needed — host net binds directly.
+    network_mode: host
     environment:
-      DOMAIN: "${DOMAIN:-localhost}"
-      API_UPSTREAM: "http://host.docker.internal:${API_PORT:-8090}"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      DOMAIN: "${DOMAIN:-:8081}"
+      API_UPSTREAM: "http://localhost:${API_PORT:-8090}"
     volumes:
       - caddy_data:/data       # persists Let's Encrypt certs
     depends_on:

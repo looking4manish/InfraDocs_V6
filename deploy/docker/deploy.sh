@@ -42,7 +42,7 @@ else
     printf 'ADMIN_USER=admin\n'
     printf 'ADMIN_PASSWORD=Changeme001\n'
     printf 'PROJECTS_ROOT=%s\n'  "$PROJECTS_ROOT"
-    printf 'DOMAIN=:80\n'
+    printf 'DOMAIN=:8081\n'      # Caddy (host net) listens here; must match WEB_PORT
     printf 'COMPOSE_PROFILES=\n'
     printf 'CF_TUNNEL_TOKEN=\n'
     printf 'TS_AUTHKEY=\n'
