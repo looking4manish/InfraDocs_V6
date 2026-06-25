@@ -167,7 +167,16 @@ class ProjectDetector:
             if p == root or root in p.parents:
                 if len(str(root)) > best_len:
                     best, best_len = name, len(str(root))
-        return best
+        if best != "System":
+            return best
+        # Fallback: the app is deployed outside its discovered dir but a path
+        # component exactly matches a known project name — e.g. an nginx
+        # `root /home/x/mxh/dist` while the mxh project lives in /data/mxh.
+        parts = set(p.parts)
+        for name in self._projects:
+            if name in parts:
+                return name
+        return "System"
 
     def get_project_from_service_name(self, service_name: str, unit_file_path: str = "") -> str:
         if unit_file_path:

@@ -66,3 +66,12 @@ def test_host_root_translation(tmp_path, monkeypatch):
     # stored as the REAL host path, not the /host-prefixed one
     assert pd.project_paths()["app"] == "/srv/app"
     assert pd.get_project_from_path("/srv/app/data") == "app"
+
+
+def test_path_component_fallback_for_relocated_app(tmp_path):
+    # mxh discovered at <data>/mxh, but its nginx root is /home/x/mxh/dist.
+    (tmp_path / "data" / "mxh").mkdir(parents=True)
+    pd = ProjectDetector(projects_root=str(tmp_path / "data"))
+    assert "mxh" in pd.list_projects()
+    assert pd.get_project_from_path("/home/msinha/mxh/frontend/dist") == "mxh"
+    assert pd.get_project_from_path("/var/www/other/dist") == "System"
