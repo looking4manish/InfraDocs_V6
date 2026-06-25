@@ -43,6 +43,8 @@ def chat(db, system: str, user: str, timeout: int = 45, json_mode: bool = True) 
     req = urllib.request.Request(
         url, data=json.dumps(body).encode(), method="POST",
         headers={"Content-Type": "application/json",
+                 # Some gateways 403 the default python-urllib UA — send a real one.
+                 "User-Agent": "InfraDocs/1.0",
                  **({"Authorization": f"Bearer {cfg['key']}"} if cfg["key"] else {})},
     )
     try:
