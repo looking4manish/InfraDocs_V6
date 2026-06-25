@@ -7,11 +7,10 @@ just like an nginx server block. Read-only; never raises.
 
 from __future__ import annotations
 
-import glob
 import re
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from app.core.hostpath import read_host_configs
 from app.scanners.base import BaseScanner
 
 CONFIG_GLOBS = [
@@ -64,11 +63,7 @@ class CaddyScanner(BaseScanner):
 
     def scan(self) -> List[Dict[str, Any]]:
         assets: List[Dict[str, Any]] = []
-        for cfg_file in self._config_files():
-            try:
-                text = Path(cfg_file).read_text(errors="replace")
-            except OSError:
-                continue
+        for cfg_file, text in read_host_configs(CONFIG_GLOBS):
             for site in parse_caddyfile(text):
                 for addr in site["addresses"]:
                     host = addr.split(":")[0]
@@ -76,13 +71,6 @@ class CaddyScanner(BaseScanner):
                         continue  # bare port / localhost — not public
                     assets.append(self._make_asset(host, site["upstreams"], cfg_file))
         return assets
-
-    @staticmethod
-    def _config_files() -> List[str]:
-        files: List[str] = []
-        for pat in CONFIG_GLOBS:
-            files.extend(glob.glob(pat))
-        return sorted(set(files))
 
     def _make_asset(self, host, upstreams, cfg_file) -> Dict[str, Any]:
         upstream_port = None

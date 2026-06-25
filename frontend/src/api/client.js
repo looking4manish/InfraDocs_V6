@@ -66,6 +66,10 @@ export const endpoints = {
   listProjects: () => api.get("/api/projects/list"),
   getProject: (name) => api.get(`/api/projects/${encodeURIComponent(name)}`),
 
+  // web endpoints / UIs
+  listEndpoints: (server) =>
+    api.get("/api/endpoints", { params: server ? { server } : {} }),
+
   // applications (Phase 5+ correlated docs)
   listApplications: (params = {}) =>
     api.get("/api/applications/list", { params }),

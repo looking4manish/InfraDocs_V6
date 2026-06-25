@@ -9,7 +9,7 @@ import { formatBytes } from "../components/Bytes";
 import { cn } from "../lib/cn";
 import Dashboard from "./Dashboard";
 
-const LENSES = ["Dashboard", "Projects", "Servers", "Assets"];
+const LENSES = ["Dashboard", "Projects", "Servers", "Web", "Assets"];
 
 const SPRING = { type: "spring", stiffness: 400, damping: 36 };
 
@@ -244,6 +244,74 @@ function Fact({ k, v, mono, tone }) {
   );
 }
 
+const SCOPE_STYLE = {
+  public: "bg-emerald-500/15 text-emerald-300",
+  tailnet: "bg-cyan-500/15 text-cyan-300",
+  localhost: "bg-zinc-500/15 text-zinc-300",
+  "all-interfaces": "bg-amber-500/15 text-amber-300",
+  "private-lan": "bg-violet-500/15 text-violet-300",
+  private: "bg-zinc-500/15 text-zinc-300",
+};
+const KIND_STYLE = {
+  web: "bg-accent/15 text-accent-soft",
+  database: "bg-rose-500/15 text-rose-300",
+  monitoring: "bg-amber-500/15 text-amber-300",
+  infra: "bg-zinc-500/15 text-zinc-400",
+};
+
+function WebLens() {
+  const q = useQuery({
+    queryKey: ["endpoints"],
+    queryFn: () => endpoints.listEndpoints().then((r) => r.data),
+  });
+  const eps = q.data?.endpoints || [];
+  return (
+    <div>
+      <div className="flex items-baseline gap-3 mb-1">
+        <h1 className="text-[21px] font-semibold tracking-tight">Web &amp; Services</h1>
+        <span className="text-[13px] text-zinc-500">{eps.length} reachable</span>
+      </div>
+      <p className="text-[13px] text-zinc-500 mb-4">
+        Every hosted page / UI / service across the fleet — clickable, with where it
+        lives and how it's reached.
+      </p>
+      {q.isLoading && <div className="text-zinc-400 text-sm">Loading…</div>}
+      <div className="space-y-2">
+        {eps.map((e, i) => (
+          <div key={i} className="neon-panel rounded-xl px-4 py-3 flex items-start gap-3">
+            <span className={cn("text-[10px] px-2 py-0.5 rounded-full shrink-0 mt-0.5 font-medium",
+              KIND_STYLE[e.kind] || KIND_STYLE.infra)}>{e.kind}</span>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                {e.url ? (
+                  <a href={e.url} target="_blank" rel="noreferrer"
+                     className="text-accent-soft hover:underline font-medium font-mono text-[13px] truncate">
+                    {e.url}
+                  </a>
+                ) : (
+                  <span className="font-medium font-mono text-[13px] text-zinc-300">{e.host}</span>
+                )}
+                <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full shrink-0",
+                  SCOPE_STYLE[e.scope] || SCOPE_STYLE.private)}>{e.scope}</span>
+              </div>
+              <div className="text-xs text-zinc-400 mt-1">
+                <span className="text-zinc-200">{e.service}</span>
+                {e.recognized && e.recognized !== e.service && <span className="text-zinc-500"> · {e.recognized}</span>}
+                <span className="text-zinc-600"> · {e.server}</span>
+                {e.via && <span className="text-zinc-600"> · via {e.via}</span>}
+              </div>
+              <div className="text-[11px] text-zinc-500 mt-1">{e.access}</div>
+            </div>
+          </div>
+        ))}
+        {!q.isLoading && eps.length === 0 && (
+          <div className="text-sm text-zinc-500">No endpoints found yet — run a scan.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function LensHome() {
   const [params, setParams] = useSearchParams();
   const lens = LENSES.includes(params.get("lens")) ? params.get("lens") : "Dashboard";
@@ -303,6 +371,7 @@ export default function LensHome() {
           >
             {lens === "Projects" && <ProjectsLens apps={projects} onOpen={open} reduce={reduce} />}
             {lens === "Servers" && <ServersLens apps={all} reduce={reduce} />}
+            {lens === "Web" && <WebLens />}
             {lens === "Dashboard" && <Dashboard />}
             {lens === "Assets" && (
               <div className="flex items-baseline gap-3 mb-4">

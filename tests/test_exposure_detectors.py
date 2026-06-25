@@ -75,7 +75,7 @@ def test_cloudflared_parses_ingress_and_skips_catchall(tmp_path, monkeypatch):
         "    service: http://localhost:8080\n"
         "  - service: http_status:404\n"
     )
-    monkeypatch.setattr(cf_mod, "_config_files", lambda: [str(cfg)])
+    monkeypatch.setattr(cf_mod, "read_host_configs", lambda globs: [(str(cfg), cfg.read_text())])
     monkeypatch.setattr(cf_mod, "_running", lambda: True)
     assets = CloudflaredScanner("oci", _FakePD()).scan()
 
@@ -90,6 +90,15 @@ def test_cloudflared_parses_ingress_and_skips_catchall(tmp_path, monkeypatch):
 
 
 def test_cloudflared_no_config_is_clean(monkeypatch):
-    monkeypatch.setattr(cf_mod, "_config_files", lambda: [])
+    monkeypatch.setattr(cf_mod, "read_host_configs", lambda globs: [])
     monkeypatch.setattr(cf_mod, "_running", lambda: False)
     assert CloudflaredScanner("oci", _FakePD()).scan() == []
+
+
+def test_cloudflared_token_tunnel_when_running_no_config(monkeypatch):
+    monkeypatch.setattr(cf_mod, "read_host_configs", lambda globs: [])
+    monkeypatch.setattr(cf_mod, "_running", lambda: True)
+    assets = CloudflaredScanner("oci", _FakePD()).scan()
+    assert len(assets) == 1
+    assert assets[0]["health_indicators"]["internet_exposed"] is True
+    assert "remote-managed" in assets[0]["name"]
