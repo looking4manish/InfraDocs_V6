@@ -166,6 +166,11 @@ class NginxScanner(BaseScanner):
         upstream = upstream_match.group(1) if upstream_match else ""
         upstream_host, upstream_port = _parse_upstream(upstream)
 
+        # Static sites: the `root` directive points at the served directory, which
+        # is the strongest project signal for non-proxied blocks.
+        root_match = re.search(r"\broot\s+([^;{]+);", block)
+        root_dir = root_match.group(1).strip() if root_match else None
+
         ssl_cert_match = re.search(r"\bssl_certificate\s+([^;]+);", block)
         ssl_cert_path = ssl_cert_match.group(1).strip() if ssl_cert_match else None
         has_ssl = bool(ssl_cert_path) or 443 in listen_ports
@@ -179,7 +184,13 @@ class NginxScanner(BaseScanner):
             str(listen_ports[0]) if listen_ports else "?"
         )
 
+        # Attribute by domain (hardcoded hints), then the served root dir, then the
+        # config file's own location — so static/scattered sites stop landing in System.
         project = self.project_detector.get_project_from_domain(server_name)
+        if project == "System" and root_dir:
+            project = self.project_detector.get_project_from_path(root_dir)
+        if project == "System":
+            project = self.project_detector.get_project_from_path(str(path))
         internet_exposed = has_ssl and 443 in listen_ports
 
         return self.create_asset(
@@ -190,6 +201,7 @@ class NginxScanner(BaseScanner):
             project=project,
             metadata={
                 "config_file": str(path),
+                "root": root_dir,
                 "server_names": primary_names,
                 "listen": [l.strip() for l in listen],
                 "listen_ports": listen_ports,
