@@ -59,23 +59,26 @@ def chat(db, system: str, user: str, timeout: int = 45, json_mode: bool = True) 
 def _parse_json(text: Optional[str]) -> Optional[dict]:
     if not text:
         return None
-    try:
-        return json.loads(text)
-    except Exception:
-        m = _JSON_RE.search(text)
-        if m:
-            try:
-                return json.loads(m.group(0))
-            except Exception:
-                return None
+    t = text.strip()
+    if t.startswith("```"):                       # strip ```json … ``` fences
+        t = re.sub(r"^```[a-zA-Z]*\s*", "", t)
+        t = re.sub(r"\s*```$", "", t).strip()
+    for candidate in (t, _JSON_RE.search(t) and _JSON_RE.search(t).group(0)):
+        if not candidate:
+            continue
+        try:
+            return json.loads(candidate)
+        except Exception:
+            continue
     return None
 
 
 _LABEL_SYS = (
-    "You identify infrastructure services from evidence. Reply with ONLY a JSON "
-    "object: {\"label\": short product/service name, \"kind\": one of "
-    "[web,database,cache,monitoring,queue,proxy,app,infra,other], \"purpose\": one "
-    "concise sentence}. If unsure, give your best guess and set purpose accordingly."
+    "Identify the infrastructure service from the evidence. Output ONLY a single-line "
+    "minified JSON object, no markdown, no code fences, no prose: "
+    "{\"label\":\"short product/service name\",\"kind\":\"one of "
+    "web|database|cache|monitoring|queue|proxy|app|infra|other\",\"purpose\":\"one "
+    "concise sentence\"}. Best guess if unsure."
 )
 
 
@@ -90,10 +93,11 @@ def label_service(db, evidence: dict) -> Optional[dict]:
 
 _INSIGHTS_SYS = (
     "You are an infrastructure analyst. Given a JSON inventory of servers, services, "
-    "exposures and ports, return ONLY JSON: {\"summary\": 2-3 sentence overview, "
-    "\"observations\": [up to 6 short strings — notable facts, exposure/security "
-    "concerns, unlabeled or unusual services], \"recommendations\": [up to 4 short "
-    "strings]}. Be specific and reference real names from the data."
+    "exposures and ports, output ONLY minified JSON, no markdown/fences/prose: "
+    "{\"summary\":\"2-3 sentence overview\",\"observations\":[\"up to 6 short strings: "
+    "notable facts, exposure/security concerns, unusual services\"],"
+    "\"recommendations\":[\"up to 4 short strings\"]}. Keep each string under 25 words. "
+    "Be specific and reference real names from the data."
 )
 
 
