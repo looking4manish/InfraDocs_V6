@@ -139,6 +139,7 @@ function DonutPanel({
         <>
           <div className="flex items-center gap-4">
             <div className="relative shrink-0" style={{ width: 150, height: 150 }}>
+              <div className="neon-chart h-full w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
@@ -159,6 +160,7 @@ function DonutPanel({
                   />
                 </PieChart>
               </ResponsiveContainer>
+              </div>
               <div className="absolute inset-0 grid place-items-center pointer-events-none">
                 <div className="text-center">
                   <div className="text-lg font-semibold text-zinc-100 tabular-nums">
@@ -362,6 +364,7 @@ export default function Dashboard() {
               Loading…
             </div>
           ) : (
+            <div className="neon-chart">
             <ResponsiveContainer width="100%" height={catChartHeight}>
               <BarChart
                 data={sortedCats}
@@ -395,6 +398,7 @@ export default function Dashboard() {
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
+            </div>
           )}
         </Panel>
       </div>
