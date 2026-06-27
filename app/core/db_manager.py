@@ -283,6 +283,7 @@ class DBManager:
         self.db.federation_commands.create_index("command_id", unique=True)
         self.db.federation_commands.create_index([("server_id", ASCENDING), ("status", ASCENDING)])
         self.db.federation_commands.create_index([("created_at", DESCENDING)])
+        self.db.federation_commands.create_index([("status", ASCENDING), ("dispatched_at", ASCENDING)])
 
         logger.info(f"Created indexes for {self.database}")
 

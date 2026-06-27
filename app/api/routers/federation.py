@@ -9,7 +9,7 @@ this delivers the data plane.)
 
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -118,6 +118,58 @@ def ingest(
 def _is_self_protected(name: str) -> bool:
     return any((name or "").startswith(p) for p in SELF_PROTECT_PREFIXES)
 
+# How long a claimed-but-unreported command may sit before the reaper closes it.
+# A dispatched command is one guarded action (start/stop/restart/logs); if the
+# secondary hasn't reported in this window it's dead (host down, poll cycle died,
+# network dropped), not slow. Mark it 'expired' and write the closing audit entry
+# — never DELETE, so the actions_log trail stays intact.
+COMMAND_EXPIRY_SECONDS = 15 * 60
+
+
+def reap_stale_commands(db: DBManager) -> int:
+    """Close out commands claimed (status='dispatched') but never reported within
+    COMMAND_EXPIRY_SECONDS. Returns the number reaped. Idempotent; safe to call
+    on every /commands read. Only touches 'dispatched' rows with a dispatched_at —
+    a 'pending' row that's merely old just hasn't been polled yet and is left alone.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=COMMAND_EXPIRY_SECONDS)
+    reaped = 0
+    while True:
+        cmd = db.db.federation_commands.find_one_and_update(
+            {"status": "dispatched", "dispatched_at": {"$lt": cutoff}},
+            {"$set": {
+                "status": "expired",
+                "completed_at": datetime.now(timezone.utc),
+                "result": {
+                    "status": "expired",
+                    "stdout": "",
+                    "stderr": "",
+                    "return_code": None,
+                    "duration_ms": 0,
+                    "refused_reason": "no result reported before expiry",
+                },
+            }},
+            return_document=ReturnDocument.AFTER,
+        )
+        if not cmd:
+            break
+        asset = cmd.get("asset", {})
+        db.record_action({
+            "actor": cmd.get("created_by"),
+            "server_id": cmd.get("server_id"),
+            "asset_id": asset.get("asset_id"),
+            "asset_name": asset.get("name"),
+            "category": asset.get("category"),
+            "project": asset.get("project"),
+            "action": cmd.get("action"),
+            "args": cmd.get("args", {}),
+            "status": "expired",
+            "refused_reason": "no result reported before expiry",
+            "command_id": cmd.get("command_id"),
+            "origin": "federation",
+        })
+        reaped += 1
+    return reaped
 
 class DispatchRequest(BaseModel):
     server_id: str
@@ -197,6 +249,7 @@ def list_commands(
     db: DBManager = Depends(get_db),
 ):
     """Primary: list recent dispatched commands (drives the Servers-lens panel)."""
+    reap_stale_commands(db)
     q = {"server_id": server_id} if server_id else {}
     rows = list(
         db.db.federation_commands.find(q, {"_id": 0})

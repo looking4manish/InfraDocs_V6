@@ -303,3 +303,129 @@ def test_result_rejects_wrong_server_token(client):
         headers={"X-Join-Token": other_tok},
     )
     assert r.status_code == 403
+
+
+
+
+def _insert_command(db, command_id, status, *, dispatched_at=None, created_at=None):
+
+    """Insert a federation_commands row directly (bypassing enqueue) so we can
+
+    control its age and status for reaper assertions."""
+
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+
+    doc = {
+
+        "command_id": command_id,
+
+        "server_id": "n150",
+
+        "asset": {
+
+            "category": "docker_container",
+
+            "asset_id": "n150:container:web",
+
+            "name": "web",
+
+            "project": "siteproj",
+
+            "metadata": {"container_id": "web"},
+
+        },
+
+        "action": "restart",
+
+        "args": {},
+
+        "status": status,
+
+        "created_at": created_at or now,
+
+        "created_by": "tester",
+
+    }
+
+    if dispatched_at is not None:
+
+        doc["dispatched_at"] = dispatched_at
+
+    db.db.federation_commands.insert_one(doc)
+
+
+
+
+
+def test_reaper_expires_stale_dispatched_commands(client):
+
+    from datetime import datetime, timedelta, timezone
+
+    db = app.dependency_overrides[api_deps.get_db]()
+
+    now = datetime.now(timezone.utc)
+
+    old = now - timedelta(seconds=901)        # just past the 900s window
+
+    recent = now - timedelta(seconds=60)      # well inside the window
+
+
+
+    _insert_command(db, "stale1", "dispatched", dispatched_at=old)
+
+    _insert_command(db, "fresh1", "dispatched", dispatched_at=recent)
+
+    _insert_command(db, "pend1", "pending")
+
+
+
+    # GET /commands triggers reap-on-read.
+
+    listing = client.get("/api/federation/commands?server_id=n150", auth=AUTH).json()
+
+    by_id = {c["command_id"]: c for c in listing["commands"]}
+
+
+
+    # Stale claimed command is expired; fresh and pending are untouched.
+
+    assert by_id["stale1"]["status"] == "expired"
+
+    assert by_id["fresh1"]["status"] == "dispatched"
+
+    assert by_id["pend1"]["status"] == "pending"
+
+
+
+    # The expiry is audited in actions_log, mirroring a real result close-out.
+
+    audit = client.get("/api/actions/?asset_id=n150:container:web", auth=AUTH).json()
+
+    assert any(
+
+        a.get("command_id") == "stale1" and a["status"] == "expired"
+
+        for a in audit["actions"]
+
+    )
+
+
+
+    # Reaper is idempotent — a second read doesn't re-expire or duplicate audits.
+
+    client.get("/api/federation/commands?server_id=n150", auth=AUTH)
+
+    audit2 = client.get("/api/actions/?asset_id=n150:container:web", auth=AUTH).json()
+
+    expired_audits = [
+
+        a for a in audit2["actions"]
+
+        if a.get("command_id") == "stale1" and a["status"] == "expired"
+
+    ]
+
+    assert len(expired_audits) == 1
+

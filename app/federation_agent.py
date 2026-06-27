@@ -34,15 +34,46 @@ def run_poll(args) -> int:
         db.close()
 
 
+def run_reap(args) -> int:
+
+    """Primary-side: close out commands claimed but never reported (cron-friendly).
+
+    Run this on the PRIMARY, not a secondary — it operates on the queue directly."""
+
+    from app.api.routers.federation import reap_stale_commands
+
+    cfg = load_config(args.config)
+
+    db = DBManager(uri=cfg.mongodb.uri, database=cfg.mongodb.database)
+
+    try:
+
+        n = reap_stale_commands(db)
+
+        print(f"reaped {n} stale command(s)")
+
+        return 0
+
+    finally:
+
+        db.close()
+
+
+
+
+
 def main():
     parser = argparse.ArgumentParser(description="InfraDocs federation agent (secondary)")
     parser.add_argument("--config", default="config.yml")
     sub = parser.add_subparsers(dest="cmd")
     sub.add_parser("poll")
+    sub.add_parser("reap")
 
     args = parser.parse_args()
     if args.cmd in (None, "poll"):
         sys.exit(run_poll(args))
+    if args.cmd == "reap":
+        sys.exit(run_reap(args))
     parser.print_help()
     sys.exit(1)
 
