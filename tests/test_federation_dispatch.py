@@ -429,3 +429,77 @@ def test_reaper_expires_stale_dispatched_commands(client):
 
     assert len(expired_audits) == 1
 
+
+
+# --------------------------------------------------------------------------
+# agent: run_reap role-guard (mirrors run_poll's secondary guard)
+# --------------------------------------------------------------------------
+
+from types import SimpleNamespace
+
+import app.federation_agent as FA
+
+
+class _FakeSettings:
+    def __init__(self, doc):
+        self._doc = doc
+
+    def find_one(self, _q):
+        return self._doc
+
+
+class _FakeReapDB:
+    def __init__(self, doc):
+        self.db = SimpleNamespace(settings=_FakeSettings(doc))
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+class _Args:
+    config = "config.yml"
+
+
+def _patch_agent(monkeypatch, role_doc, reap_ret=0):
+    """Wire run_reap to an in-memory settings doc — no Mongo needed."""
+    fake_db = _FakeReapDB(role_doc)
+    monkeypatch.setattr(
+        FA, "load_config",
+        lambda _c: SimpleNamespace(mongodb=SimpleNamespace(uri="mongodb://x", database="d")),
+    )
+    monkeypatch.setattr(FA, "DBManager", lambda uri, database: fake_db)
+    import app.api.routers.federation as Fed
+    calls = {"n": 0}
+
+    def _reap(_db):
+        calls["n"] += 1
+        return reap_ret
+
+    monkeypatch.setattr(Fed, "reap_stale_commands", _reap)
+    return fake_db, calls
+
+
+def test_reap_refuses_on_non_primary(monkeypatch, capsys):
+    fake_db, calls = _patch_agent(monkeypatch, {"_id": "app", "role": "secondary"})
+    rc = FA.run_reap(_Args())
+    assert rc == 1                       # non-zero, like run_poll's refusal
+    assert calls["n"] == 0               # never touched the queue
+    assert fake_db.closed                # db still closed in finally
+    assert "refusing to reap" in capsys.readouterr().out
+
+
+def test_reap_refuses_when_role_unset(monkeypatch, capsys):
+    fake_db, calls = _patch_agent(monkeypatch, {"_id": "app"})  # role=None
+    rc = FA.run_reap(_Args())
+    assert rc == 1
+    assert calls["n"] == 0
+
+
+def test_reap_proceeds_on_primary(monkeypatch, capsys):
+    fake_db, calls = _patch_agent(monkeypatch, {"_id": "app", "role": "primary"}, reap_ret=3)
+    rc = FA.run_reap(_Args())
+    assert rc == 0
+    assert calls["n"] == 1
+    assert fake_db.closed
+    assert "reaped 3 stale command(s)" in capsys.readouterr().out
