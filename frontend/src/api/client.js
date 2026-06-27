@@ -70,6 +70,17 @@ export const endpoints = {
   listEndpoints: (server) =>
     api.get("/api/endpoints", { params: server ? { server } : {} }),
 
+  // federation (multi-server)
+  federationServers: () => api.get("/api/federation/servers"),
+  mintFederationToken: (server_id) =>
+    api.post("/api/federation/tokens", { server_id }),
+  dispatchFederationCommand: (server_id, asset_id, action, args = {}) =>
+    api.post("/api/federation/commands", { server_id, asset_id, action, args }),
+  listFederationCommands: (server_id) =>
+    api.get("/api/federation/commands", {
+      params: server_id ? { server_id } : {},
+    }),
+
   // AI layer
   aiStatus: () => api.get("/api/ai/status"),
   aiEnrich: (server) =>

@@ -1,0 +1,12 @@
+[Unit]
+Description=Run InfraDocs federation reap every 5 minutes (primary)
+
+[Timer]
+# Nothing expires until a command is 900s (15 min) past being claimed, so a 5-min
+# sweep is plenty — running tighter buys nothing.
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
