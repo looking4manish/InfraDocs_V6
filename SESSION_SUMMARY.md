@@ -109,3 +109,80 @@ claim→result round-trip audit; cross-server token 403.
 5. **Chunk-size warning** from `vite build` (>500 kB) is pre-existing, not introduced here.
 6. **API tests need a reachable MongoDB** (they `pytest.skip` otherwise) — same as the existing
    Phase 8 API suite. They ran green here.
+
+---
+
+# ⚠ LIVE-HOST CHANGES — REVIEW
+
+Session goal: schedule the two federation cycles (`poll` on secondaries, `reap` on the
+primary) as role-detected systemd timers, and install them across the OCI / OCI-P / N150
+tailnet mesh. **Outcome: no host currently has a configured federation role, so by the
+role-detection rule NO timer was installed on any host.** The only live change is undoing a
+prior premature install. Details per host below.
+
+### Step 1 — premature timer DISABLED (OCI)
+A previous session had installed **and enabled** `infradocs-fed-reap.timer` on OCI even though
+OCI's `settings.role` is `None`. That was wrong (reap must run only on the primary). This session:
+- `sudo systemctl disable --now infradocs-fed-reap.timer` → `Removed .../timers.target.wants/infradocs-fed-reap.timer`, now `disabled` + `inactive`.
+- Confirmed gone from `systemctl list-timers` (no `infradocs-fed` timers).
+- Then removed the leftover inert unit files and `daemon-reload`d, so OCI carries nothing.
+
+### OCI — detected role: **None (unconfigured)** → installed: **NOTHING**
+- Role read locally: `OCI role = None`.
+- Action: nothing installed; leftover `infradocs-fed-reap.{service,timer}` removed.
+- Verify:
+  - files: `(no infradocs-fed unit files — clean)`
+  - timers: `(no infradocs-fed timers — clean)`
+  - untouched: `infradocs-v6-agent.timer` still scheduled (next 2026-06-27 20:26 UTC); `infradocs-v6-api.service` = `active`.
+- **Operator TODO:** run the setup wizard on OCI to assign its role (this is intended to be the
+  PRIMARY). Once `role=primary`, install reap per `deploy/systemd/INSTALL.md`.
+
+### OCI-P — reachable, but **no InfraDocs install** → installed: **NOTHING**
+- SSH `msinha@100.70.18.9` (master_key) OK; `hostname = oci-p`.
+- `repo: ABSENT`, `venv: ABSENT` — InfraDocs isn't deployed here, so there's no role to read
+  and no interpreter to run a timer against.
+- Action: nothing installed.
+- **Operator TODO:** deploy InfraDocs on OCI-P, run the setup wizard (→ `role=secondary`,
+  primary URL, join token), then install poll per INSTALL.md.
+
+### N150 — network-reachable, **SSH auth unavailable from this session** → installed: **NOTHING**
+- `ping 100.72.146.5` → `2 received, 0% packet loss` (tailnet up).
+- SSH `msinha@100.72.146.5` → `Permission denied (publickey,password)` with both `master_key`
+  and default keys; ssh-agent has no identities. This session has no key N150 accepts, so its
+  role could not be read and nothing could be installed.
+- Action: nothing installed (could not authenticate — not a failed install).
+- **Operator TODO (must run yourself — you hold N150's key):**
+  ```bash
+  ssh msinha@100.72.146.5
+  cd ~/projects/InfraDocs_V6 && source venv/bin/activate
+  # 1) confirm role:
+  python - <<'PY'
+  from app.core.config_loader import load_config
+  from app.core.db_manager import DBManager
+  cfg = load_config("config.yml")
+  db = DBManager(uri=cfg.mongodb.uri, database=cfg.mongodb.database)
+  print("role =", (db.db.settings.find_one({"_id":"app"}) or {}).get("role"))
+  db.close()
+  PY
+  # 2) if role == secondary, install poll ONLY:
+  sudo cp deploy/systemd/infradocs-fed-poll.service /etc/systemd/system/
+  sudo cp deploy/systemd/infradocs-fed-poll.timer   /etc/systemd/system/
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now infradocs-fed-poll.timer
+  systemctl list-timers --all | grep infradocs-fed
+  journalctl -u infradocs-fed-poll.service -n 20 --no-pager
+  ```
+  (If InfraDocs isn't deployed on N150 yet, deploy + run the wizard first.)
+
+### Guardrails honored
+Only `infradocs-fed-*` units were ever touched. `infradocs-v6-agent.timer`,
+`infradocs-v6-api.service`, nginx, Caddy, and cloudflared were not modified or restarted on any
+host. No half-installed/broken state was left or pushed: every host carries either its correct
+units (none qualified this run) or nothing.
+
+### Bottom line
+The scheduling machinery is built, committed, and role-safe (both cycles self-guard; install is
+role-detected). It is **not yet live anywhere** because the fleet has no roles assigned. The
+gating next step is operator-side: run the setup wizard to make OCI the primary and OCI-P/N150
+secondaries, then install per `deploy/systemd/INSTALL.md`. This supersedes "Left for human
+review" items 1 and 3 above (the reaper and the timers now exist).
