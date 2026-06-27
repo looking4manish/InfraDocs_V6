@@ -145,34 +145,19 @@ OCI's `settings.role` is `None`. That was wrong (reap must run only on the prima
 - **Operator TODO:** deploy InfraDocs on OCI-P, run the setup wizard (→ `role=secondary`,
   primary URL, join token), then install poll per INSTALL.md.
 
-### N150 — network-reachable, **SSH auth unavailable from this session** → installed: **NOTHING**
-- `ping 100.72.146.5` → `2 received, 0% packet loss` (tailnet up).
-- SSH `msinha@100.72.146.5` → `Permission denied (publickey,password)` with both `master_key`
-  and default keys; ssh-agent has no identities. This session has no key N150 accepts, so its
-  role could not be read and nothing could be installed.
-- Action: nothing installed (could not authenticate — not a failed install).
-- **Operator TODO (must run yourself — you hold N150's key):**
-  ```bash
-  ssh msinha@100.72.146.5
-  cd ~/projects/InfraDocs_V6 && source venv/bin/activate
-  # 1) confirm role:
-  python - <<'PY'
-  from app.core.config_loader import load_config
-  from app.core.db_manager import DBManager
-  cfg = load_config("config.yml")
-  db = DBManager(uri=cfg.mongodb.uri, database=cfg.mongodb.database)
-  print("role =", (db.db.settings.find_one({"_id":"app"}) or {}).get("role"))
-  db.close()
-  PY
-  # 2) if role == secondary, install poll ONLY:
-  sudo cp deploy/systemd/infradocs-fed-poll.service /etc/systemd/system/
-  sudo cp deploy/systemd/infradocs-fed-poll.timer   /etc/systemd/system/
-  sudo systemctl daemon-reload
-  sudo systemctl enable --now infradocs-fed-poll.timer
-  systemctl list-timers --all | grep infradocs-fed
-  journalctl -u infradocs-fed-poll.service -n 20 --no-pager
-  ```
-  (If InfraDocs isn't deployed on N150 yet, deploy + run the wizard first.)
+### N150 — reachable, but **InfraDocs V6 not deployed (V5 only)** → installed: **NOTHING**
+- Reachable over the tailnet as **`manishkumarsinha@100.72.146.5`** (not `msinha`), key
+  `~/.ssh/master_key`; `hostname = N150`. (An earlier attempt as `msinha@` was rejected — the
+  username, corrected mid-session, was the blocker, not the network.)
+- InfraDocs V6 is **not deployed**: `~/projects/InfraDocs_V6` is absent; only the legacy
+  `~/projects/InfraDocs_V5` checkout exists, and no V6 venv. So there is no V6 `settings.role`
+  to read and nothing for a V6 timer's `ExecStart` to run against.
+- A stale legacy `infradocs-scanner.timer` (V5-era, `inactive`/`dead`) is present — **left
+  untouched** (not one of our four `infradocs-fed-*` units).
+- Action: nothing installed (host not provisioned for V6 — not a failed install).
+- **Operator TODO:** deploy InfraDocs V6 on N150, run the setup wizard (→ `role=secondary`,
+  primary URL, join token), then install poll per `deploy/systemd/INSTALL.md`. SSH as
+  `manishkumarsinha@100.72.146.5`.
 
 ### Guardrails honored
 Only `infradocs-fed-*` units were ever touched. `infradocs-v6-agent.timer`,
