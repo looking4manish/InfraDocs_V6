@@ -103,7 +103,7 @@ tests/         pytest suite (auth, setup, federation, scanners, correlator, acti
 | **Reading host configs in a container** | `app/core/hostpath.py` (the `/host` mount) — never read `/etc/...` directly |
 | **Teardown / blast radius** | `app/teardown.py`, `app/blast_radius.py` |
 | **The roadmap / what's next** | [`docs/V7_PLAN.md`](docs/V7_PLAN.md) (§0 reality update), and §8 below |
-| **History of a past session** | the `*HANDOFF*.md` files (marked HISTORICAL) and `docs/phases/PHASE_*_STATUS.md` (build journal) |
+| **History of a past session** | `git log` — the per-session `*HANDOFF*.md` files and `docs/phases/PHASE_*_STATUS.md` build journal were pruned once their work landed on `main` |
 
 ---
 
