@@ -1,216 +1,170 @@
-# InfraDocs V6 — Project Context (for fresh Claude sessions)
+# InfraDocs — Project Context (for fresh Claude sessions)
 
-This file is the single-page brief a new Claude session should read to be productive on this repo without re-deriving everything. Keep it concise; deep details live in `docs/`.
+The single-page brief a new session should read to be productive without re-deriving
+everything. Deep details live in `docs/`; the latest deep handoff is
+[`CONTEXT_FOR_LLM.md`](CONTEXT_FOR_LLM.md).
+
+> The repo is named `InfraDocs_V6` but the product is well past single-host V6. It is now a
+> deployable Docker product with auth, a setup wizard, federation, an AI layer, and a Web tab.
 
 ---
 
 ## What this is
 
-A single-host infrastructure dashboard for OCI. Scans → correlates → exposes → visualizes → **acts on** everything running on the box. Live at https://infra.ocialwaysfree.site/.
+An **infrastructure documentation cockpit**. It scans one or more servers → correlates →
+exposes → visualizes → **acts on** everything running on them. The original live instance
+runs at https://infra.ocialwaysfree.site/ (native deployment — see "Two deployments").
 
-Rewrite of V5 (which distributed scanning across multiple hosts and turned into a debugging mess). V6 deliberately targets one host (production-quality OCI-only); multi-host returns post-V6.
+Pipeline: **scanners → correlator → MongoDB → FastAPI → React frontend.**
+
+## ⚠️ Two deployments — don't conflate them
+
+1. **Live / legacy — `infra.ocialwaysfree.site`** (this machine, "OCI primary"):
+   native systemd service `infradocs-v6-api.service` running `uvicorn app.api.main:app` on
+   `127.0.0.1:8004`, from **this repo**; host nginx serves `frontend/dist/` + proxies
+   `/api/` → `:8004`; separate MongoDB. **Production — keep it up.** Because nginx serves
+   `frontend/dist/` live, **never** run a bare `vite build` here — use `--outDir /tmp/...`.
+2. **Product / test — dockerized stack** (`deploy/docker/`): compose of MongoDB + API
+   (host net + host PID, host FS mounted read-only at `/host`) + Caddy web. Installed via
+   `deploy.sh`, removed via `remove.sh`. This is the future of the project.
 
 ## Where things live
 
 ```
 /home/msinha/projects/InfraDocs_V6/
 ├── app/
-│   ├── core/                       config, db_manager, project_detector, logger
-│   ├── scanners/                   one per category: docker, compose, systemd, nginx, port, storage
-│   ├── correlator.py               flat assets → application documents (project + System buckets)
-│   ├── ports_registry.py           Phase 7B
-│   ├── storage_registry.py         Phase 7C
-│   ├── actions.py                  Phase 8 dispatcher
-│   ├── agent.py                    CLI: python -m app.agent scan
+│   ├── core/             config_loader, db_manager, project_detector, recognize, hostpath, logger
+│   ├── scanners/         docker, compose, systemd, port, storage, nginx, caddy,
+│   │                       cloudflared, certs, cron  (+ base, registry)
+│   ├── correlator.py     flat assets → application docs (+ links[] evidence)
+│   ├── actions.py        action dispatcher + allow-list
+│   ├── ai.py             optional LLM layer: label_service + fleet_insights
+│   ├── auth.py           bcrypt + DB session tokens
+│   ├── federation.py     primary mint-token / secondary outbound ingest
+│   ├── blast_radius.py, teardown.py    guarded project teardown
+│   ├── ports_registry.py, storage_registry.py
+│   ├── agent.py          CLI: python -m app.agent scan
 │   └── api/
-│       ├── main.py                 FastAPI app + router includes
-│       ├── dependencies.py         auth, db, config
-│       └── routers/                health, assets, projects, applications,
-│                                   ports, storage, scans, actions
-├── frontend/                       React 19 + Vite 8 + Tailwind 3 + React Query 5
-├── deploy/                         systemd unit, nginx vhost, install scripts, sudoers.infradocs
-├── docs/
-│   ├── ARCHITECTURE.md             read-me-first for any structural change
-│   ├── DEVELOPMENT.md
-│   ├── DEPLOY.md
-│   └── phases/PHASE_{1..8}_STATUS.md    build journal — what landed, why, gotchas
-├── tests/                          118 tests across phases 1-8
-├── config.yml
-├── .env                            INFRADOCS_MONGO_URI + INFRADOCS_API_PASSWORD (gitignored)
-├── README.md
-└── CONTEXT.md                      this file
+│       ├── main.py       FastAPI app, lifespan (seeds admin), router includes
+│       ├── dependencies.py   verify_auth (Bearer | Basic | disabled), get_db
+│       └── routers/      auth, setup, federation, endpoints, ai, assets, projects,
+│                           applications, ports, storage, scans, actions, health
+├── frontend/             React 19 + Vite + Tailwind + React Query (Neon-Depth theme)
+├── deploy/
+│   ├── docker/           deploy.sh, remove.sh, docker-compose.yml, Caddyfile, Dockerfile(.web)
+│   └── *.service/*.conf/install_*.sh   legacy native systemd + nginx
+├── docs/                 ARCHITECTURE, DEPLOY, DEVELOPMENT, V7_PLAN, phases/
+├── CONTEXT.md            this file
+└── CONTEXT_FOR_LLM.md    latest deep handoff
 ```
 
-## Status (as of 2026-05-24)
+## Auth (replaced the old HTTP-Basic-only model)
 
-| Phase | What | Status |
-|---|---|---|
-| 1 | Foundation (config, db, project_detector) | ✅ |
-| 2 | Six scanners (docker, compose, systemd, nginx, port, storage) | ✅ |
-| 3 | FastAPI API on :8004 with HTTP Basic auth | ✅ |
-| 4 | React+Vite frontend (Dashboard, Projects, Assets, Scans) | ✅ |
-| 5 | Scanner enrichment + correlator (application documents) | ✅ |
-| 6 | Live on internet via nginx + Cloudflare + LE wildcard cert | ✅ |
-| 7 | Project/System ownership + Ports registry + Storage registry | ✅ |
-| 8 | Operational controls (start/stop/restart/logs + audit log) | ✅ |
-| 9A | Frontend extension: Applications/Ports/Storage/Actions pages + action buttons | ✅ |
-| 9B | UI polish, frontend tests, hardening | pending |
+bcrypt password hashing + **DB-backed session tokens** sent as `Authorization: Bearer`.
+A default `admin` user is seeded with `must_change_password` (default `admin / Changeme001`).
+`app/api/dependencies.py::verify_auth` accepts: a valid Bearer session, OR HTTP Basic
+(DB user bcrypt **or** config-credential fallback), OR `INFRADOCS_AUTH_DISABLED=1`.
+Routers: `app/api/routers/auth.py` (`/login` throttled, `/change-password`, `/logout`,
+`/me`). Frontend gate: `frontend/src/App.jsx` (loading → login → change-password → setup →
+ready); token in `localStorage` as `ifd_token`; a 401 fires `ifd-unauthorized`.
 
-## Data model — the 30-second mental model
+## First-run wizard
 
-Every asset (container, image, volume, network, compose file, nginx server block, systemd unit, listening port, mount) lands in **exactly one bucket**:
+`frontend/src/pages/Setup.jsx` → `app/api/routers/setup.py`. Captures server name, role
+(standalone / primary / secondary), exposure (domain + public-IP detection / Tailscale /
+Cloudflare Tunnel), and **optional AI config** (endpoint / key / model). Gated on
+`settings.setup_complete`. `/detect-ip` classifies every interface and loudly flags
+Tailscale/VPN/CGNAT/private addresses so a user never points DNS at an unreachable IP.
 
-- a `~/projects/<name>` project bucket (one per subfolder of `/home/msinha/projects`), OR
-- the single `System` bucket (everything that can't be tied to a project folder)
+## Federation (multi-server)
 
-This invariant is enforced by `correlator.py` and checked every scan by `audit_ownership()`. No orphans, no third bucket, no null project fields.
+Primary mints join tokens (`POST /api/federation/tokens`); secondaries push scan data
+**outbound** to the primary's `POST /api/federation/ingest` (NAT-friendly).
+`GET /api/federation/servers` lists known servers. Command dispatch (primary→secondary
+actions) is **designed, not yet built**.
 
-Collections in Mongo (db: `infradocs`):
+## AI layer (3 tiers — built & verified)
 
-| Collection | What | Unique key |
-|---|---|---|
-| `assets` | Flat output of all scanners | `(category, asset_id)` |
-| `applications` | Correlated docs, one per project bucket + System | `application_id` |
-| `ports` | Phase 7B registry (evidence-based, deduped per port+proto) | `port_id` |
-| `storage` | Phase 7C registry (mounts + volumes + project trees + binds) | `storage_id` |
-| `actions_log` | Phase 8 audit (every action attempt, including refusals) | — |
-| `scan_logs` | One row per scan with summary stats | — |
-| `projects` | Currently unused (legacy from V5) | `project_name` |
+1. **Recognize** (`app/core/recognize.py`) — deterministic port/image/process → label.
+2. **Enrich** (`app/ai.py::label_service`, `POST /api/ai/enrich`) — LLM labels unknowns,
+   cached in the `ai_labels` collection.
+3. **Insights** (`app/ai.py::fleet_insights`, `/api/ai/insights`) — one LLM call over the
+   whole inventory → summary + observations + recommendations.
 
-## API surface
+Any OpenAI-compatible `/chat/completions` endpoint (OpenAI / Ollama / vLLM). Disabled
+cleanly when unset; only non-sensitive metadata is sent; the key is a stored secret.
+Recommended model against the user's Ollama: **`gpt-oss:120b-cloud`** (clean JSON, ~8s).
+Two fixes that made it work: strip ```` ```json ```` fences, and send a real `User-Agent`
+(the gateway 403s the default `python-urllib` UA).
 
-All under `/api/*`. Auth: HTTP Basic, username `msinha`, password from `INFRADOCS_API_PASSWORD` env var (falls back to `dev_password` in `config.yml` if env is unset). The `/` and `/api/health` routes are public.
+## Web tab
 
-```
-GET  /                               name + version (public)
-GET  /api/health                     mongo ping (public)
+`GET /api/endpoints` (`app/api/routers/endpoints.py`) aggregates exposure blocks + listening
+ports into every reachable UI/service across the fleet — deduped by host/port, with
+browsable URLs and an access scope (internet / localhost / tailnet). Rendered as the **Web**
+lens in `frontend/src/pages/LensHome.jsx`.
 
-GET  /api/assets/                    filters: category, project, status
-GET  /api/assets/categories          counts per category
-GET  /api/assets/{asset_id}          one asset
+## Data model — the 30-second version
 
-GET  /api/projects/list              counts + health score per project
-GET  /api/projects/{name}            full asset list for a project
+Every asset lands in **exactly one bucket**: a `~/projects/<name>` project bucket, or the
+single `System` bucket. Enforced by `correlator.py`, checked by `audit_ownership()`. Project
+attribution rule: **only `~/projects/<X>` paths name a project; never infer from a string
+prefix** (a V5 regression that tests guard). The correlator persists `links[]` evidence per
+join so the UI renders topology instead of re-deriving it.
 
-GET  /api/applications/list          correlated app docs
-GET  /api/applications/{name}        one app doc
+Mongo collections (db `infradocs`): `assets`, `applications`, `ports`, `storage`,
+`actions_log`, `scan_logs`, `settings` (wizard + AI config), `ai_labels`, federation
+join/server records.
 
-GET  /api/ports/                     filters: state, project, port_min, port_max
-GET  /api/ports/summary              counts by state + by owner
-GET  /api/ports/probe?range=X-Y      live ss snapshot, NOT persisted
+## Action dispatcher allow-list
 
-GET  /api/storage/                   filters: kind, project
-GET  /api/storage/summary            counts + size_bytes by kind + by owner
-
-GET  /api/scans/                     recent scan logs
-GET  /api/scans/{scan_id}            one scan
-POST /api/scans/trigger              202 + background scan
-
-POST /api/assets/{asset_id}/action          {"action":"...", "args":{...}}
-POST /api/applications/{name}/action        fans out to all assets in the app
-GET  /api/actions/                          audit log; filters: asset_id, action, actor, limit
-GET  /api/actions/allowed                   per-category action allow-list
-```
-
-### Action dispatcher allow-list (Phase 8)
-
-| Category | Allowed actions |
-|---|---|
-| `docker_container` | start, stop, restart, logs |
-| `docker_compose` | up, down, restart |
-| `systemd_service` | start, stop, restart, status, logs |
-| `systemd_timer` | start, stop, restart, status |
-| `nginx_server_block` | test, reload |
-
-All other categories explicitly have no actions → 403. Self-protection: any `infradocs-v6-*` unit → 409. Audit log records every attempt (success, failed, refused).
-
-## Frontend — what exists right now (Phase 4 baseline)
-
-Stack: React 19 + Vite 8 + Tailwind 3 + React Router 7 + TanStack Query 5 + axios.
-
-Visual language (don't break this when adding pages):
-- Dark theme. Palette in `tailwind.config.js`: `bg-base`/`bg-panel`/`bg-card`/`bg-hover`, `accent` (#3b82f6).
-- Sidebar + header layout; main content scrolls.
-- Cards: `bg-bg-card border border-bg-hover rounded-lg p-4`.
-- Labels: `text-xs uppercase tracking-wide text-slate-400`.
-- Stat values: `text-2xl font-semibold`.
-- Active nav: `bg-accent/20 text-accent`.
-
-Pages (Phase 4 + 9A):
-- Dashboard (`/`) — hero cards + applications list + recent actions feed + categories strip
-- Applications (`/applications`, `/applications/:name`) — card grid + rich detail with action buttons
-- Projects (`/projects`, `/projects/:name`) — simpler legacy view from /api/projects
-- Ports (`/ports`) — registry table + filters + live `ss` probe widget
-- Storage (`/storage`) — by-owner bar chart + kind tabs + table with mount usage bars
-- Actions (`/actions`) — audit log with expandable rows showing stdout/stderr
-- Assets (`/assets`) — flat list with category/project/status filters
-- Scans (`/scans`) — history table + trigger button
-
-Shared components: `AppCard`, `ActionButton` (with confirm + output modal), `StatePill`, `UsageBar`, `Bytes/formatBytes`.
-
-axios client at `frontend/src/api/client.js`:
-- Reads creds from `localStorage` (`ifd_user`, `ifd_pass`).
-- No hardcoded password fallback (removed post-Phase-8). Empty creds → 401 → browser shows native auth prompt.
-- 401 response wipes stored `ifd_pass` so a wrong cached password doesn't silently loop.
+`docker_container` (start/stop/restart/logs/…), `docker_compose` (up/down/restart/…),
+`systemd_service` (start/stop/restart/status/logs/enable/disable), `systemd_timer`,
+`nginx_server_block` (test/reload), plus Wave-B additions (image pull/prune, port
+identify/kill, etc. — see `REGISTRY_SPEC.md`). Self-protection: any `infradocs-v6-*` unit →
+409. Every attempt (success/failed/refused) is audited.
 
 ## Conventions
 
-- **Add a scanner:** subclass `BaseScanner`, emit dicts via `self.create_asset(...)` with an explicit `project=`. Register in `app/scanners/registry.py`. Every asset MUST get a project field (project folder name or `"System"`).
-- **Add an API endpoint:** new file in `app/api/routers/`, include in `app/api/main.py`. Always depend on `verify_auth` unless the route is intentionally public.
-- **Add a DB collection:** add `replace_X` / `get_X` methods on `DBManager`; create indexes in `DBManager.create_indexes()` (called at API startup and from the agent).
-- **Tests:** mirror file path under `tests/`. API tests use TestClient + dependency override pattern from `test_phase3_api.py`. Auth derived from env+config via `_resolve_auth()` (don't hardcode credentials in tests — they'll silently break the moment a real password is set in .env).
-- **Commits:** small, per sub-task. Each phase is split into A/B/C/D commits when reasonable. Co-author footer: `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`.
-- **Memory:** see [memory README](#) — autonomous mode + data-model invariant memories live in `~/.claude/projects/-home-msinha-projects/memory/`.
+- **Add a scanner:** subclass `BaseScanner`, emit via `self.create_asset(..., project=…)`,
+  register in `app/scanners/registry.py`, add to `enabled_scanners` in `config.yml`. Every
+  asset gets a project (folder name or `"System"`).
+- **Add an API endpoint:** new file in `app/api/routers/`, include in `app/api/main.py`,
+  depend on `verify_auth` unless intentionally public.
+- **Read host configs from inside the container** via `app/core/hostpath.py` (the `/host`
+  mount) — don't read `/etc/...` directly when containerized.
+- **Commits:** small, per sub-task; co-author footer
+  `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 
-## How to develop / run
+## Run / develop
 
 ```bash
-# One-time
 python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt
-cp .env.example .env  # then set INFRADOCS_MONGO_URI
-
-# Scan + populate DB
-python -m app.agent scan --summary
-
-# Run the API locally (different port from prod 8004)
-python -m uvicorn app.api.main:app --host 127.0.0.1 --port 8005
-
-# Frontend dev (proxies /api/* to :8004)
-cd frontend && npm install && npm run dev
-
-# Frontend prod build → nginx serves frontend/dist/
-cd frontend && npm run build
-
-# Tests
-python -m pytest tests/ -v
-
-# Restart live API to pick up code changes
-sudo systemctl restart infradocs-v6-api.service
+cp .env.example .env                                  # set INFRADOCS_MONGO_URI
+python -m app.agent scan --summary                    # scan + populate
+python -m uvicorn app.api.main:app --host 127.0.0.1 --port 8005   # API (≠ prod 8004)
+cd frontend && npm install && npm run dev             # → :5173 (proxies /api → :8004)
+python -m pytest tests/ -v                            # tests
+sudo systemctl restart infradocs-v6-api.service       # restart live API after code change
+# Build frontend for prod WITHOUT clobbering live dist:  npx vite build --outDir /tmp/ifd-check
 ```
 
-## Live deploy details
+## Key reference
 
-| What | Where |
+| Item | Value |
 |---|---|
-| API | `infradocs-v6-api.service` systemd unit, runs as `msinha`, port 8004, EnvironmentFile loads `.env` |
-| Nginx vhost | `/etc/nginx/sites-enabled/infra.ocialwaysfree.site` → serves `frontend/dist/` static + proxies `/api/*` to `127.0.0.1:8004` |
-| Cert | `/etc/letsencrypt/live/ocialwaysfree.site/*` (wildcard) |
-| DNS | Cloudflare-fronted — `infra.ocialwaysfree.site` → 104.21.95.155 (CF edge) |
-| Sudoers (for Phase 8 systemd/nginx actions) | `/etc/sudoers.d/infradocs` (install from `deploy/sudoers.infradocs`) |
+| Hosts in scope | OCI (primary), OCI-P, N150 |
+| SSH | `biwi` = OCI-P (`msinha@100.70.18.9`, key `~/.ssh/master_key`) |
+| Default login | `admin / Changeme001` (forced change); config-cred Basic fallback `admin:Changeme001` |
+| Ollama | `https://ai.ocialwaysfree.site/v1`, model `gpt-oss:120b-cloud` |
+| Live native deploy | `infradocs-v6-api.service` :8004 + host nginx `infra.ocialwaysfree.site` |
+| Branch | `feature/neon-depth-theme` (in sync with `origin/main`) |
 
-## Known open items
+## Known open items / next
 
-- Frontend has no automated tests yet (Phase 9 polish).
-- The `frontend/dist/` build is manual (`npm run build`); a `deploy/build.sh` would be a nice-to-have.
-- The vite dev server on `:5173` may still be running from Phase 4 testing — harmless but should be retired.
-- `INFRADOCS_API_PASSWORD` is now set (no longer the dev default). Don't commit it.
-- Some `~/projects/*` subfolders (`claude`, `RaveUploader`) exist but have no live runtime assets — they appear as empty application docs intentionally so the dashboard sees the complete project list.
-
-## What changed recently — read in order
-
-1. `docs/phases/PHASE_7_STATUS.md` — ownership invariant + ports + storage registries
-2. `docs/phases/PHASE_8_STATUS.md` — action dispatcher + audit log + endpoints
-3. Frontend `client.js` — removed hardcoded `msinha123` fallback
-4. Test files — `AUTH = _resolve_auth()` pattern (so env-set password doesn't break the suite)
-5. `docs/phases/PHASE_9A_FRONTEND_STATUS.md` — five new pages, action buttons, dashboard refresh
-6. `frontend/vite.config.js` — `build.assetsDir = "static"` (fixed `/assets` route 301 caused by dist/assets/ shadowing the SPA route — present since Phase 6)
+- **Command dispatch** (federation primary→secondary actions) — requested, not started.
+- **Federation viewing UI** — `/api/federation/servers` exists; `ServersLens` in
+  `LensHome.jsx` is still a mock → wire it up + "Add a server" (mint token) + server switcher.
+- **Production cutover** — archive native OCI → fresh dockerized primary → onboard OCI-P +
+  N150 as secondaries (user configures exposure himself; keep the product generic).
+- N150 testing (user runs it; sites there exposed via Cloudflare tunnel).

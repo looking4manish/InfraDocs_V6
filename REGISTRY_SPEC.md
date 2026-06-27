@@ -6,7 +6,9 @@
 > 3–7. To resume in any session, attach this file + `V7_PLAN.md` + the latest handoff and say:
 > *"Resume InfraDocs V7 Phase 3.5 at Step N. C.H.A.I.N. protocol."*
 >
-> - **Status:** Spec drafted — implementation not started
+> - **Status:** ✅ Implemented — Wave A + Wave B (safe subset) actions shipped; backend
+>   `ACTION_REGISTRY`, frontend `CARD_REGISTRY` + `<ActionBar/>` live. This file is now a
+>   reference for the registry contract rather than an open work plan. (Updated 2026-06-27.)
 > - **Repo:** `/home/msinha/projects/InfraDocs_V6` (OCI, user `msinha`)
 > - **Protocol:** C.H.A.I.N. — one action/turn, State Block every turn, heredoc-only writes, no assumed filenames
 

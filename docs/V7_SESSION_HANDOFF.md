@@ -1,5 +1,9 @@
 # InfraDocs V7 — Session Handoff (2026-06-11)
 
+> 🗄️ **HISTORICAL (as of 2026-06-27).** Earliest V7 session record (Phases 1–2), kept for the
+> journal. Much has shipped since (auth, wizard, Docker product, federation, AI layer). For
+> current state read [`../CONTEXT_FOR_LLM.md`](../CONTEXT_FOR_LLM.md) and [`../CONTEXT.md`](../CONTEXT.md).
+
 > Companion to `V7_PLAN.md` (the strategy doc). This file carries the **implementation truth and
 > lessons** from the session that shipped Phases 1 + 2, so the next session starts with zero
 > re-discovery. Attach BOTH files when resuming: *"Resume InfraDocs V7 at Phase 3. C.H.A.I.N."*

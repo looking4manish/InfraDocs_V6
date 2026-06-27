@@ -1,44 +1,83 @@
 # Architecture
 
-InfraDocs V6 has three layers.
+InfraDocs has three layers (frontend → API → MongoDB) fed by a scanning agent, plus two
+cross-cutting capabilities added since the original V6: an optional **AI layer** and
+**multi-server federation**.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                     Frontend (React + Vite)                       │
-│    Dark-theme SPA, polls API, shows applications & assets         │
+│  Neon-Depth SPA · lens home (Dashboard/Projects/Servers/Web/…)    │
+│  login → change-password → setup wizard → cockpit                 │
 └──────────────────────┬───────────────────────────────────────────┘
-                       │ HTTP (Basic Auth)
+                       │ HTTP — Authorization: Bearer <session token>
                        ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│                       API (FastAPI, :8004)                        │
-│   /api/applications  /api/assets  /api/projects  /api/scans       │
-│   /api/scans/trigger runs the agent in a BackgroundTask           │
-└────────────────────┬─────────────────────────────────────────────┘
-                     │           ▲
-              read   │           │  upsert
-                     ▼           │
+│                       API (FastAPI, :8004 native / :8090 docker)  │
+│  auth · setup · federation · endpoints · ai · assets · projects   │
+│  applications · ports · storage · scans · actions · health        │
+│  /api/scans/trigger runs the agent in a BackgroundTask            │
+└──────────┬───────────────────────────┬────────────────┬──────────┘
+           │ read/upsert               │ optional       │ federation
+           ▼                           ▼                ▼ ingest
+┌─────────────────────────┐  ┌──────────────────┐  ┌─────────────────┐
+│        MongoDB          │  │  AI layer        │  │ Secondaries push│
+│ assets · applications · │  │ recognize →      │  │ scan data here  │
+│ ports · storage ·       │  │ LLM enrich →     │  │ (NAT-friendly,  │
+│ actions_log · scan_logs │  │ fleet insights   │  │  outbound only) │
+│ settings · ai_labels    │  │ (OpenAI-compat)  │  └─────────────────┘
+└────────────▲────────────┘  └──────────────────┘
+             │ upsert / replace
 ┌──────────────────────────────────────────────────────────────────┐
-│                          MongoDB                                  │
-│        Collections: assets, applications, scan_logs               │
-└────────────────────▲───────────────────────────────────────────▲─┘
-                     │                                            │
-            upsert   │                                  replace   │
-                     │                                            │
-┌──────────────────────────────────────────────────────────────────┐
-│                       Agent (python -m app.agent scan)            │
-│                                                                   │
-│   ┌────────────┐  ┌────────────┐  ┌────────────┐  ┌──────────┐   │
-│   │  systemd   │  │   docker   │  │  compose   │  │  nginx   │   │
-│   └────────────┘  └────────────┘  └────────────┘  └──────────┘   │
-│   ┌────────────┐  ┌────────────┐                                  │
-│   │    port    │  │  storage   │     ── flat assets ───▶          │
-│   └────────────┘  └────────────┘                                  │
-│                                                                   │
-│   ┌─────────────────────────────────────────────────────────┐    │
-│   │     correlator.py — 11 passes — application docs         │    │
-│   └─────────────────────────────────────────────────────────┘    │
+│                  Agent (python -m app.agent scan)                 │
+│  ┌────────┐┌────────┐┌────────┐┌────────┐┌────────┐┌────────┐     │
+│  │systemd ││ docker ││compose ││ nginx  ││ caddy  ││cloudfl.│     │
+│  └────────┘└────────┘└────────┘└────────┘└────────┘└────────┘     │
+│  ┌────────┐┌────────┐┌────────┐┌────────┐                         │
+│  │  port  ││storage ││ certs  ││  cron  │   ── flat assets ──▶    │
+│  └────────┘└────────┘└────────┘└────────┘                         │
+│  ┌─────────────────────────────────────────────────────────┐      │
+│  │   correlator.py — deterministic passes — application     │      │
+│  │   docs with links[] evidence                             │      │
+│  └─────────────────────────────────────────────────────────┘      │
 └──────────────────────────────────────────────────────────────────┘
 ```
+
+## Deployment topologies
+
+- **Native (legacy / live):** `infradocs-v6-api.service` runs uvicorn on `127.0.0.1:8004`;
+  host nginx serves `frontend/dist/` and proxies `/api/`. Separate MongoDB. This is
+  `infra.ocialwaysfree.site`.
+- **Docker product:** `deploy/docker/docker-compose.yml` — MongoDB + API + Caddy. The API
+  container runs with **host network + host PID** and mounts the host filesystem read-only
+  at `/host`, so scanners see real containers/processes/ports/configs. Caddy also runs on
+  the host network (the OCI firewall drops docker-bridge → host traffic, so the proxy must
+  reach the API at `localhost`). Read host config files through `app/core/hostpath.py`, not
+  by reading `/etc/...` directly.
+
+## Auth & first-run
+
+Requests carry `Authorization: Bearer <token>`. `app/auth.py` does bcrypt hashing and
+DB-backed sessions; `app/api/dependencies.py::verify_auth` accepts a valid Bearer session,
+HTTP Basic (DB user **or** config-credential fallback), or `INFRADOCS_AUTH_DISABLED=1`. A
+default `admin` user is seeded at startup with `must_change_password`. The first run drives
+a **setup wizard** (`app/api/routers/setup.py`) that records server role, exposure mechanism,
+and optional AI config in the `settings` collection, gated on `setup_complete`.
+
+## AI layer (optional, three tiers)
+
+`app/core/recognize.py` does deterministic recognition (port/image/process → label).
+Unknowns are enriched by `app/ai.py::label_service` via any OpenAI-compatible
+`/chat/completions` endpoint and cached in `ai_labels`. `fleet_insights` makes one call over
+the whole inventory for a summary + observations + recommendations. The layer is disabled
+cleanly when no endpoint is configured, and only non-sensitive service metadata is ever sent.
+
+## Federation (multi-server)
+
+A **primary** mints join tokens; each **secondary** runs its own scan and pushes the result
+**outbound** to the primary's `POST /api/federation/ingest`, so a secondary behind NAT never
+needs an inbound port. `application_id`/`server_id` carry the originating host so the primary
+stores a unified fleet view. See `app/federation.py` and `app/api/routers/federation.py`.
 
 ## The application-centric model (this is the load-bearing idea)
 
@@ -57,7 +96,11 @@ The correlator runs 11 deterministic passes. Linking strategies, strongest to we
 5. **Subdomain → project** via a small `DOMAIN_MAPPING` table in `ProjectDetector` (e.g. `chat.*` → `openwebui`).
 6. **Process's `/proc/<pid>/cwd`** — used by the port scanner to tag listening ports.
 
-An app's `application_id` is `{server_id}:app:{name}` for forward-compatibility with multi-host re-introduction. Today `server_id` is always `oci`; documents carry this constant so a future split into per-host server_ids doesn't require schema migration.
+An app's `application_id` is `{server_id}:app:{name}`. `server_id` is now per-host: a
+secondary scans locally and pushes its documents (carrying its own `server_id`) to the
+primary via federation, so the primary stores a unified, multi-host fleet view without
+schema migration. The single-host era hardcoded `server_id = "oci"`; the field was always
+present precisely so this split required no migration.
 
 ## Why the `project_detector` matters more than it looks
 
@@ -72,9 +115,18 @@ Tests assert this regression doesn't come back (`test_project_detector_rejects_s
 | `systemd` | `systemd_service`, `systemd_timer` | `exec_start`, `working_directory`, `user`, `environment_keys` (names only), `restart`, `unit_file_state`, `drop_in_paths` |
 | `docker` | `docker_container`, `docker_image`, `docker_volume`, `docker_network` | container: `host_ports`, `bind_mount_sources`, `env_keys`, `cmd`, `entrypoint`, `compose_*` labels, `restart_policy`, `healthcheck_*`; volume: `mountpoint` + walked `size_bytes` |
 | `compose` | `docker_compose` | services list, file path, version |
-| `nginx` | `nginx_server_block` | `listen_ports` (ints), `upstream_host`/`upstream_port` (parsed), SSL `issuer` + `not_after`, `cloudflare_origin`, `internet_exposed`, `url` |
+| `nginx` | `nginx_server_block` | `listen_ports` (ints), `root` directive, `upstream_host`/`upstream_port` (parsed), SSL `issuer` + `not_after`, `cloudflare_origin`, `internet_exposed`, `url` |
+| `caddy` | `caddy_site` | site address, upstream, exposure mechanism (parsed from Caddyfiles via `hostpath`) |
+| `cloudflared` | `cloudflare_tunnel` | tunnel ingress hostname → service; emits a token-tunnel asset when running config-less |
+| `certs` | `tls_certificate` | subject, issuer, `not_after`, source path — promotes cert expiry to a first-class registry |
+| `cron` | `cron_job` | user/system crontab entries: schedule, command, owner |
 | `port` | `network_port` | port, protocol, local_address, process name, PID |
 | `storage` | `storage_mount` | size/used/avail, fstype, usage_percent |
+
+`nginx`, `caddy`, and `cloudflared` are the **pluggable exposure detectors** — each reports
+the mechanism plus the public hostname, so `internet_exposed` is proof, not hearsay. The Web
+tab (`/api/endpoints`) aggregates their output with listening ports into one fleet-wide list
+of reachable UIs/services, deduped by host/port, with browsable URLs and an access scope.
 
 ## Why MongoDB
 

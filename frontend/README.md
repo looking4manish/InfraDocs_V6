@@ -1,16 +1,47 @@
-# React + Vite
+# InfraDocs frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React 19 + Vite + Tailwind + TanStack Query SPA for the InfraDocs cockpit. Theme is
+**Neon-Depth** (MongoDB-green on a dark base), static — no motion.
 
-Currently, two official plugins are available:
+## Dev
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```bash
+npm install
+npm run dev          # → http://localhost:5173, proxies /api/* to http://127.0.0.1:8004
+```
 
-## React Compiler
+The API must be running (see the repo root `README.md` / `docs/DEVELOPMENT.md`). Auth flow:
+the app gate in `src/App.jsx` walks login → forced password change → setup wizard → cockpit;
+the session token lives in `localStorage` as `ifd_token` and is sent as `Authorization:
+Bearer`. A 401 dispatches `ifd-unauthorized` and drops the token.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## ⚠️ Building — do NOT clobber the live dist
 
-## Expanding the ESLint configuration
+The live OCI box serves `frontend/dist/` directly via nginx, so a bare `npm run build` /
+`npx vite build` **instantly changes production**. To only verify compilation, build to a
+throwaway dir:
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+```bash
+npx vite build --outDir /tmp/ifd-check
+```
+
+Build to `dist/` **only** when you actually intend to publish.
+
+## Layout
+
+```
+src/
+├── App.jsx                 # AuthGate: login → change-pw → setup → cockpit
+├── api/client.js           # axios + Bearer token + endpoint map
+├── pages/
+│   ├── Login.jsx · Setup.jsx        # auth + first-run wizard (incl. AI labeling)
+│   ├── LensHome.jsx                 # lens nav: Dashboard/Projects/Servers/Web/Resources/Assets
+│   ├── Applications.jsx · ApplicationDetail.jsx   # master-detail + topology lane
+│   └── …                            # Ports, Storage, Actions, Assets, Scans
+├── components/             # AppCard, ActionButton, ActionBar, StatePill, UsageBar, …
+└── registry/cards.js       # CARD_REGISTRY — per-category icon/label/shape/fields/actions
+```
+
+Notable lenses: **Web** lists every reachable UI/service across the fleet (`/api/endpoints`);
+the AI controls (label unknowns / fleet insights) call `/api/ai/*`. The `ServersLens` is
+currently a mock pending wiring to `/api/federation/servers`.

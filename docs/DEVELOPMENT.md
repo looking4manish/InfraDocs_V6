@@ -25,7 +25,7 @@ cp .env.example .env
 $EDITOR .env
 # Set:
 #   INFRADOCS_MONGO_URI=mongodb://localhost:27017/   # or your replica-set URI
-#   INFRADOCS_API_PASSWORD=                          # leave empty in dev, falls back to dev_password
+#   INFRADOCS_AUTH_DISABLED=1                         # optional: skip auth entirely in local dev
 
 # Frontend
 cd frontend
@@ -42,7 +42,10 @@ source venv/bin/activate
 python -m app.agent scan --summary
 ```
 
-The agent runs all six scanners, writes raw assets, then runs the correlator and writes applications. `--summary` prints by-category and by-project counts at the end.
+The agent runs all enabled scanners (docker, compose, systemd, port, storage, nginx, caddy,
+cloudflared, certs, cron — see `enabled_scanners` in `config.yml`), writes raw assets, then
+runs the correlator and writes applications. `--summary` prints by-category and by-project
+counts at the end.
 
 ### Start the API
 
@@ -51,7 +54,12 @@ source venv/bin/activate
 python -m uvicorn app.api.main:app --host 127.0.0.1 --port 8004
 ```
 
-Hit `http://localhost:8004/docs` for the auto-generated OpenAPI UI. Auth: HTTP Basic, dev creds `msinha:msinha123` (set `INFRADOCS_API_PASSWORD` in `.env` to override).
+Hit `http://localhost:8004/docs` for the auto-generated OpenAPI UI. Auth: a default `admin`
+user is seeded (`admin` / `Changeme001`, forced password change on first login); the API
+issues a session token used as `Authorization: Bearer`. For a frictionless local loop, set
+`INFRADOCS_AUTH_DISABLED=1` in `.env` to bypass auth. `verify_auth` also accepts HTTP Basic
+against the DB user or a config-credential fallback. See `app/auth.py` +
+`app/api/routers/auth.py`.
 
 ### Start the frontend dev server
 
@@ -66,11 +74,24 @@ Vite proxies `/api/*` to `http://127.0.0.1:8004`, so the API must already be run
 ### Trigger a scan from the running API
 
 ```bash
-curl -u msinha:msinha123 -X POST http://localhost:8004/api/scans/trigger
+# with auth disabled in dev:
+curl -X POST http://localhost:8004/api/scans/trigger
+# or with a session token:
+curl -H "Authorization: Bearer $TOKEN" -X POST http://localhost:8004/api/scans/trigger
 # returns {"scan_id":"...","status":"queued"}; scan runs as a BackgroundTask
 ```
 
-Or click "Run scan" in the UI header — same effect.
+Or click "Run scan" in the UI — same effect.
+
+### Building the frontend (mind the live-dist trap)
+
+The live OCI box serves `frontend/dist/` via nginx, so a bare `npm run build` /
+`npx vite build` in the repo **instantly changes production**. When you only want to check
+that the frontend compiles, build to a throwaway dir:
+
+```bash
+cd frontend && npx vite build --outDir /tmp/ifd-check
+```
 
 ## Tests
 
@@ -79,46 +100,58 @@ source venv/bin/activate
 python -m pytest tests/ -v
 ```
 
-Tests are split into four files:
+Tests live under `tests/` (one file per area). The main ones:
 
 - `test_phase1.py` — core utilities, config loader, project detector, DB connection
 - `test_phase2_scanners.py` — scanner integration tests against the local host
-- `test_phase3_api.py` — FastAPI endpoints with dependency overrides (uses a throwaway test DB)
-- `test_phase5_correlator.py` — correlator unit tests + one real-OCI integration test
+- `test_phase3_api.py` / `test_phase7_api.py` / `test_phase8_api.py` — FastAPI endpoints
+- `test_phase5_correlator.py` / `test_v7_phase1_correlator.py` — correlation logic
+- `test_phase7_ports.py` / `test_phase7_storage.py` — registries
+- `test_phase8_actions.py` — action dispatcher + allow-list
+- `test_auth.py` · `test_setup.py` · `test_federation.py` — auth, wizard, federation
+- `test_exposure_detectors.py` · `test_nginx_attribution.py` · `test_cert_scanner.py` ·
+  `test_cron_scanner.py` — newer scanners + exposure detectors
+- `test_blast_radius.py` · `test_teardown.py` · `test_project_discovery.py`
 
-Tests that require MongoDB are auto-skipped if `INFRADOCS_MONGO_URI` is unset. So `pytest tests/` is safe even without Mongo configured.
-
-Run a single file: `pytest tests/test_phase5_correlator.py -v`.
+Tests that require MongoDB are auto-skipped if `INFRADOCS_MONGO_URI` is unset, so
+`pytest tests/` is safe even without Mongo configured. Run a single file:
+`pytest tests/test_auth.py -v`.
 
 ## Project layout (developer view)
 
 ```
 app/
 ├── agent.py              # CLI entry — `python -m app.agent scan`
-├── correlator.py         # raw assets → application documents (11 passes)
+├── correlator.py         # raw assets → application documents (+ links[] evidence)
+├── actions.py            # action dispatcher + allow-list
+├── ai.py                 # optional LLM layer (label_service + fleet_insights)
+├── auth.py               # bcrypt + DB session tokens
+├── federation.py         # primary mint-token / secondary outbound ingest
+├── blast_radius.py       # teardown blast-radius computation
+├── teardown.py           # guarded project teardown
+├── ports_registry.py · storage_registry.py
 ├── core/
-│   ├── config_loader.py  # Pydantic models + load_dotenv
+│   ├── config_loader.py  # Pydantic models + load_dotenv (scan_roots, etc.)
 │   ├── db_manager.py     # MongoDB wrapper, single DB
-│   ├── logger.py         # JSON structured logger
-│   └── project_detector.py
+│   ├── project_detector.py   # multi-root discovery + path→project attribution
+│   ├── recognize.py      # deterministic service recognition (Tier 1)
+│   ├── hostpath.py       # read host configs through the /host mount (container)
+│   └── logger.py
 ├── scanners/
 │   ├── base.py           # BaseScanner ABC
-│   ├── systemd.py        # systemctl-driven
-│   ├── docker.py         # docker SDK
-│   ├── compose.py        # walks projects_root
-│   ├── nginx.py          # parses /etc/nginx/sites-enabled (brace-aware)
-│   ├── port.py           # ss -tulpnH + /proc/<pid>/cwd
-│   ├── storage.py        # df
+│   ├── systemd.py · docker.py · compose.py · port.py · storage.py
+│   ├── nginx.py          # parses sites-enabled (brace-aware) + captures `root`
+│   ├── caddy.py · cloudflared.py     # exposure detectors (via hostpath)
+│   ├── certs.py · cron.py
 │   └── registry.py       # name → class map
 └── api/
-    ├── main.py           # FastAPI app, lifespan, CORS
-    ├── dependencies.py   # get_config, get_db, verify_auth
+    ├── main.py           # FastAPI app, lifespan (seeds admin), CORS, router includes
+    ├── dependencies.py   # get_db, verify_auth (Bearer | Basic | disabled)
     └── routers/
-        ├── health.py
-        ├── assets.py
-        ├── applications.py
-        ├── projects.py
-        └── scans.py
+        ├── auth.py · setup.py · federation.py        # auth, wizard, multi-server
+        ├── endpoints.py · ai.py                       # Web tab, AI layer
+        ├── assets.py · applications.py · projects.py
+        ├── ports.py · storage.py · scans.py · actions.py · health.py
 ```
 
 ## Conventions

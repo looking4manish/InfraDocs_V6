@@ -1,55 +1,124 @@
-# Production deploy
+# Deploy
 
-The scripts in [`../deploy/`](../deploy/) install a systemd unit for the API and an nginx vhost that static-serves the built frontend. They were authored for a specific Ubuntu box (OCI Cloud VM with a wildcard Let's Encrypt cert at `/etc/letsencrypt/live/ocialwaysfree.site/`) but the patterns are straightforward to adapt.
+There are two ways to deploy InfraDocs. The **Docker product** is the supported, generic,
+multi-server path. The **native systemd + nginx** scripts are how the original live instance
+(`infra.ocialwaysfree.site`) runs and are kept for that legacy box.
 
-## Read these before running anything
+---
 
-- `deploy/infradocs-v6-api.service` — the systemd unit. Reads `.env` from the repo root. Runs `uvicorn` as user `msinha`. Change the user/paths if your box differs.
-- `deploy/infra.ocialwaysfree.site.conf` — the nginx vhost. Listens on 80 (→ 301 to 443) and 443. SSL cert paths hard-code `/etc/letsencrypt/live/ocialwaysfree.site/`. Change to your own cert location.
-- `deploy/install_nginx.sh` — copies the vhost into `/etc/nginx/sites-available/`, symlinks it into `sites-enabled/`, runs `nginx -t`, reloads on success. Rolls back the symlink if validation fails. **Does not touch any other site config.**
-- `deploy/install_service.sh` — installs the systemd unit, enables it at boot, starts it, smoke-checks `/api/health`. Kills any stray `uvicorn` first so two processes don't fight for `:8004`.
-- `deploy/uninstall_nginx.sh`, `deploy/uninstall_service.sh` — symmetric removal. Pulled the vhost/symlink/unit, ran `nginx -t` / `daemon-reload`, no leftovers.
+## 1. Docker product (recommended)
 
-## Step by step
+A self-contained docker-compose stack — MongoDB + API + Caddy web — driven by an interactive
+installer that ends at a browser-reachable setup wizard. Nothing host-specific is hardcoded;
+you choose how the UI is exposed during the wizard.
 
 ```bash
-# 0. Have a populated .env (with a strong INFRADOCS_API_PASSWORD for prod!)
+git clone https://github.com/looking4manish/InfraDocs_V6.git
+cd InfraDocs_V6/deploy/docker
+./deploy.sh
+```
+
+`deploy.sh` builds the images, starts the stack, and prints the wizard URL (it will use a
+Tailscale address or public IP when available, so you can reach it from a headless box over
+SSH/Cockpit). Then:
+
+1. Open the printed URL.
+2. Log in with the seeded `admin` / `Changeme001` (you're forced to change the password).
+3. Run the **setup wizard**: server name, role (standalone / primary / secondary), exposure
+   mechanism, and optional AI labeling (endpoint / key / model).
+
+Teardown is symmetric and clean:
+
+```bash
+./remove.sh
+```
+
+### What the stack looks like
+
+- `deploy/docker/docker-compose.yml` — `mongo` + `api` + `web`.
+- The **API container** runs with `network_mode: host` and `pid: host`, and mounts the host
+  filesystem **read-only at `/host`** (env `INFRADOCS_HOST_ROOT=/host`). That's what lets the
+  scanners see real containers, processes, listening ports, and config files. Inside the
+  container, read host configs through `app/core/hostpath.py`, never `/etc/...` directly.
+- The **web (Caddy) container** also runs on the host network and proxies to the API at
+  `localhost:<API_PORT>` (default `:8090`). It runs on the host network deliberately: the
+  OCI firewall drops docker-bridge → host traffic, so a bridged proxy couldn't reach the API.
+- Optional `cloudflared` and `tailscale` sidecars (compose profiles) provide exposure when
+  you don't have a public domain.
+- Configuration is driven by `deploy/docker/.env` (created by `deploy.sh`):
+  `INFRADOCS_SCAN_ROOTS`, ports, domain/exposure, etc.
+
+### Exposure (you configure this — the product stays generic)
+
+The wizard offers three mechanisms; pick one and wire it up yourself:
+
+- **Domain + DNS:** the wizard detects your public IP and tells you which `A`-record to
+  create; point your domain at it (Cloudflare-fronted is fine — terminate TLS at the edge).
+  On a cloud VM, also open 80/443 in the security list/firewall.
+- **Tailscale:** no domain needed — reachable on your tailnet (Funnel), one-time login link.
+- **Cloudflare Tunnel:** paste a tunnel token; no inbound ports required.
+
+### Multi-server
+
+Install the product on each host. Make one host the **primary** in its wizard; on each other
+host choose **secondary** and paste the primary URL + a join token minted on the primary
+(`POST /api/federation/tokens`). Secondaries push their scans **outbound** to the primary —
+no inbound port on the secondary. (Primary → secondary **command dispatch** is on the roadmap,
+not yet shipped.)
+
+---
+
+## 2. Native systemd + nginx (legacy — the live OCI box)
+
+This is how `infra.ocialwaysfree.site` runs today: a systemd unit runs the API and host
+nginx static-serves the built frontend. The scripts in [`../deploy/`](../deploy/) were
+authored for that Ubuntu box (wildcard Let's Encrypt cert at
+`/etc/letsencrypt/live/ocialwaysfree.site/`); adapt user/paths/cert for another host.
+
+> ⚠️ Host nginx serves `frontend/dist/` **live**. A bare `npx vite build` in the repo
+> instantly changes production. Always build to a throwaway dir
+> (`npx vite build --outDir /tmp/ifd-check`) when you only want to test compilation.
+
+Files to read before running anything:
+
+- `deploy/infradocs-v6-api.service` — systemd unit. Reads `.env`, runs `uvicorn` as `msinha`
+  on `127.0.0.1:8004`. Change user/paths for your box.
+- `deploy/infra.ocialwaysfree.site.conf` — nginx vhost. Serves `frontend/dist/`, proxies
+  `/api/` → `:8004`, TLS on 443. Cert paths hardcode `/etc/letsencrypt/live/ocialwaysfree.site/`.
+- `deploy/install_service.sh` / `deploy/install_nginx.sh` — installers (the nginx one runs
+  `nginx -t` and rolls back the symlink on failure; touches no other site).
+- `deploy/uninstall_service.sh` / `deploy/uninstall_nginx.sh` — symmetric clean removal.
+- `deploy/sudoers.infradocs` — sudoers rules for the action dispatcher (systemd/nginx actions).
+
+```bash
+# 0. Populate .env (strong creds for prod)
 $EDITOR .env
 
-# 1. Build the frontend
-cd frontend
-npm install
-npm run build      # outputs to frontend/dist/
-cd ..
+# 1. Build the frontend (to dist, since this box serves it live)
+cd frontend && npm install && npm run build && cd ..
 
-# 2. Install the systemd unit (starts the API on :8004)
+# 2. API service on :8004
 deploy/install_service.sh
 
-# 3. Install the nginx vhost (serves frontend/dist + proxies /api/)
+# 3. nginx vhost
 deploy/install_nginx.sh
 
 # 4. Verify
 curl -sk https://infra.ocialwaysfree.site/api/health
 ```
 
-## To remove cleanly
+Remove cleanly:
 
 ```bash
 deploy/uninstall_nginx.sh
 deploy/uninstall_service.sh
 ```
 
-Other nginx sites are untouched, the systemd unit is fully removed, no orphan files left behind.
+---
 
-## Cert / DNS notes
+## Cutover plan (native → dockerized fleet)
 
-- The reference vhost uses a wildcard LE cert (`*.ocialwaysfree.site`). If you don't have a wildcard, swap in a per-host cert (`/etc/letsencrypt/live/<your-host>/`) or run `certbot --nginx -d <your-host>` first.
-- DNS: the host needs an A/AAAA record (or Cloudflare CNAME) pointing at your machine. The reference setup uses Cloudflare with the `*.ocialwaysfree.site` zone — Cloudflare terminates SSL at the edge and re-encrypts to origin.
-
-## Hardening checklist (not done yet, Phase 8)
-
-- Change `dev_password` in `config.yml` and set a strong `INFRADOCS_API_PASSWORD` in `.env`.
-- Tighten the systemd unit's sandboxing (`ProtectSystem=strict`, `ProtectHome=read-only` after confirming the agent still works).
-- Tighten the nginx CORS — V6 currently sends `Access-Control-Allow-Origin: *` (gated by auth, but still loose).
-- Add log rotation for `logs/api.service.log`.
-- Consider running the API behind a forwardauth / OIDC proxy if you want SSO instead of HTTP Basic.
+The intended migration (not yet executed): archive the native InfraDocs folder + its nginx
+config on OCI → fresh **dockerized primary** on OCI → onboard OCI-P and N150 as
+**secondaries**. The user configures exposure (Cloudflare/nginx/DNS A-record) manually at
+install time; keep the product generic. See [`CONTEXT_FOR_LLM.md`](../CONTEXT_FOR_LLM.md).

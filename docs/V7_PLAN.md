@@ -4,11 +4,41 @@
 > new session, attach this file and say: *"Resume InfraDocs V7 at Phase N, Step X. C.H.A.I.N. protocol."*
 > Update the Status line and checkboxes as phases complete.
 
-- **Status:** Planning complete — Phase 1 not started
-- **Last updated:** 2026-06-11
+- **Status:** Phases 1–3 shipped; product pivoted to a deployable Docker app with auth +
+  wizard + federation + AI layer (see "Reality update" below). Scanner wave / Map / heal engine outstanding.
+- **Last updated:** 2026-06-27 (was 2026-06-11)
 - **Repo:** `/home/msinha/projects/InfraDocs_V6` (OCI, user `msinha`)
-- **Live:** https://infra.ocialwaysfree.site · API `:8004` (FastAPI, Basic Auth) · Frontend React 19 + Vite 8 + Tailwind 3
+- **Live:** https://infra.ocialwaysfree.site · native API `:8004` (FastAPI, now bcrypt + DB
+  session tokens) · Frontend React 19 + Vite + Tailwind (Neon-Depth theme)
 - **Protocol:** C.H.A.I.N. — one action per turn, State Block every turn, no assumed filenames
+
+---
+
+## 0. Reality update (2026-06-27) — plan vs. what actually shipped
+
+The plan below is the original V7 design and is kept for its scanner/UI/heal thinking. What
+the codebase actually contains now (verified against the repo):
+
+| Plan phase | Status | Notes |
+|---|---|---|
+| 1 — Correlator v2 + heartbeat | ✅ shipped | `links[]` evidence + detail fields in `correlator.py`; `test_v7_phase1_correlator.py` |
+| 2 — Frontend foundation (drawer, freshness, attention) | ✅ mostly | universal detail drawer + freshness header live; ⌘K palette partial |
+| 3 — Hero pages (lens home + topology lane) | ✅ shipped | `LensHome.jsx`, `TopologyLane.jsx`; Neon-Depth theme |
+| 3.5 — Card & Action registry | ✅ shipped | Wave A + Wave B actions (see `REGISTRY_SPEC.md`) |
+| 4 — Scanner wave 1 | 🟡 partial | shipped: `cron.py`, `certs.py`, exposure detectors `caddy.py`/`cloudflared.py`. **Not yet:** `db.py`, `exposure.py` firewall cross-check, `backup.py`, substrate IMDS/SDK, `hardware.py` |
+| 5 — Map (React Flow) | ⬜ not started | |
+| 6 — Multi-host | 🟡 partial | **federation backend shipped** (`app/federation.py`, `/api/federation/{tokens,servers,ingest}`, secondary outbound push); viewing UI (Servers page wiring) + **command dispatch** outstanding |
+| 7 — V7 engines (diff feed, heal) | ⬜ not started | |
+
+**Beyond the original plan, also shipped:** bcrypt + DB-session **auth** + first-run **setup
+wizard**; the **Docker product** (`deploy/docker/` + `deploy.sh`/`remove.sh`, host net/PID,
+read-only `/host` mount); **multi-mechanism exposure** detection; the **AI labeling layer**
+(recognize → enrich → fleet insights, `app/ai.py` + `app/core/recognize.py` + `/api/ai/*`);
+the unified **Web tab** (`/api/endpoints`).
+
+**Immediate next:** command dispatch (primary→secondary actions), federation viewing UI
+(Servers page + token mint + server switcher), and the production cutover (fresh dockerized
+primary + secondaries). See [`../CONTEXT_FOR_LLM.md`](../CONTEXT_FOR_LLM.md).
 
 ---
 
