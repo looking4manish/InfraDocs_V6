@@ -279,6 +279,11 @@ class DBManager:
 
         self.db.scan_logs.create_index([("created_at", DESCENDING)])
 
+        # Federation command queue (primary -> secondary dispatch).
+        self.db.federation_commands.create_index("command_id", unique=True)
+        self.db.federation_commands.create_index([("server_id", ASCENDING), ("status", ASCENDING)])
+        self.db.federation_commands.create_index([("created_at", DESCENDING)])
+
         logger.info(f"Created indexes for {self.database}")
 
     def get_stats(self) -> Dict:
