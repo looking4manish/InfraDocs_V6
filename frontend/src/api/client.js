@@ -70,6 +70,11 @@ export const endpoints = {
   listEndpoints: (server) =>
     api.get("/api/endpoints", { params: server ? { server } : {} }),
 
+  // federation (multi-server)
+  federationServers: () => api.get("/api/federation/servers"),
+  mintFederationToken: (server_id) =>
+    api.post("/api/federation/tokens", { server_id }),
+
   // AI layer
   aiStatus: () => api.get("/api/ai/status"),
   aiEnrich: (server) =>
