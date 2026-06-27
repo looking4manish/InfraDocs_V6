@@ -38,7 +38,7 @@ the unified **Web tab** (`/api/endpoints`).
 
 **Immediate next:** command dispatch (primary→secondary actions), federation viewing UI
 (Servers page + token mint + server switcher), and the production cutover (fresh dockerized
-primary + secondaries). See [`../CONTEXT_FOR_LLM.md`](../CONTEXT_FOR_LLM.md).
+primary + secondaries). See [`../CONTEXT.md`](../CONTEXT.md).
 
 ---
 

@@ -11,8 +11,9 @@ re-joining `docker ps`, `systemctl status`, `nginx -T`, `ss`, and `du`.
 > The repo directory is still named `InfraDocs_V6`, but the product has moved well past
 > the original single-host "V6". It now ships as a Docker product with a first-run setup
 > wizard, bcrypt auth, primary/secondary federation, an optional AI labeling layer, and a
-> unified Web tab. See [`CONTEXT_FOR_LLM.md`](CONTEXT_FOR_LLM.md) for the latest deep
-> handoff, and [`docs/V7_PLAN.md`](docs/V7_PLAN.md) for the roadmap.
+> unified Web tab. If you're an AI assistant picking this up, start at
+> [`CONTEXT.md`](CONTEXT.md) (full mental model + task breadcrumbs); for the roadmap see
+> [`docs/V7_PLAN.md`](docs/V7_PLAN.md).
 
 ## What it does
 
@@ -129,8 +130,7 @@ tests skip automatically when `INFRADOCS_MONGO_URI` is unset.
 │   └── *.service / *.conf / install_*.sh    # legacy native systemd + nginx
 ├── docs/                 # ARCHITECTURE, DEPLOY, DEVELOPMENT, V7_PLAN, phases/
 ├── tests/                # pytest suite (unit + integration)
-├── CONTEXT.md            # one-page brief for a fresh session
-├── CONTEXT_FOR_LLM.md    # latest deep handoff (deployments, AI layer, pending work)
+├── CONTEXT.md            # single LLM-onboarding doc (mental model + task breadcrumbs)
 ├── config.yml            # non-secret app config
 └── .env.example          # copy to .env; never commit .env
 ```
@@ -146,7 +146,7 @@ the AI labeling layer, and the unified Web tab.
 **In flight / next:** command dispatch (primary→secondary actions), the full federation
 viewing UI (Servers page + token mint + server switcher), and the production cutover
 (fresh dockerized primary on OCI, OCI-P + N150 as secondaries). See
-[`docs/V7_PLAN.md`](docs/V7_PLAN.md) and [`CONTEXT_FOR_LLM.md`](CONTEXT_FOR_LLM.md).
+[`docs/V7_PLAN.md`](docs/V7_PLAN.md) and [`CONTEXT.md`](CONTEXT.md).
 
 ## License
 

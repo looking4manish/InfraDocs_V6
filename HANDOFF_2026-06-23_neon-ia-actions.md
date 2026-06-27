@@ -1,8 +1,7 @@
 # InfraDocs — Session Handoff (2026-06-23) — Neon theme · IA pass · image-update flow
 
 > 🗄️ **HISTORICAL (as of 2026-06-27).** Point-in-time session record, kept for the journal.
-> The work is on `main`. For current state read [`CONTEXT_FOR_LLM.md`](CONTEXT_FOR_LLM.md) and
-> [`CONTEXT.md`](CONTEXT.md).
+> The work is on `main`. For current state read [`CONTEXT.md`](CONTEXT.md).
 
 > Branch **`feature/neon-depth-theme`** (pushed to origin). Three deliverables this
 > session, all committed + verified. **Nothing is deployed to prod yet** — see Deploy.

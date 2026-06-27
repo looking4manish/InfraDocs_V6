@@ -121,4 +121,4 @@ deploy/uninstall_service.sh
 The intended migration (not yet executed): archive the native InfraDocs folder + its nginx
 config on OCI → fresh **dockerized primary** on OCI → onboard OCI-P and N150 as
 **secondaries**. The user configures exposure (Cloudflare/nginx/DNS A-record) manually at
-install time; keep the product generic. See [`CONTEXT_FOR_LLM.md`](../CONTEXT_FOR_LLM.md).
+install time; keep the product generic. See [`CONTEXT.md`](../CONTEXT.md).

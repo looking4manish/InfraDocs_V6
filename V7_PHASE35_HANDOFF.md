@@ -2,8 +2,7 @@
 
 > 🗄️ **HISTORICAL (as of 2026-06-27).** Point-in-time session record, kept for the journal.
 > Its branch/commit/push notes are stale — all work is now on `main` (`feature/neon-depth-theme`
-> is in sync with `origin/main`). For current state read [`CONTEXT_FOR_LLM.md`](CONTEXT_FOR_LLM.md)
-> and [`CONTEXT.md`](CONTEXT.md).
+> is in sync with `origin/main`). For current state read [`CONTEXT.md`](CONTEXT.md).
 
 > Companion to `V7_PLAN.md`, `REGISTRY_SPEC.md`, and the prior handoffs. Carries the truth from the
 > session that **fixed the running-flag contract bug**, **shipped Wave B safe-subset actions**, and

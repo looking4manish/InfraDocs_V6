@@ -2,8 +2,7 @@
 
 > 🗄️ **HISTORICAL (as of 2026-06-27).** Progress tracker from the 2026-06-24 overnight run,
 > kept for the journal. Both deliverables (Docker product + multi-mechanism exposure) shipped
-> and are on `main`. For current state read [`CONTEXT_FOR_LLM.md`](CONTEXT_FOR_LLM.md) and
-> [`CONTEXT.md`](CONTEXT.md).
+> and are on `main`. For current state read [`CONTEXT.md`](CONTEXT.md).
 
 > Started 2026-06-24 night. Branch `feature/neon-depth-theme`. Running in Cockpit
 > (no tmux) so the session may drop — every step is committed + pushed; this file is
