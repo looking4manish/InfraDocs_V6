@@ -14,7 +14,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
-from app import cluster_lease as CL
+from app import cluster as CC
 from app import federation as F
 from app.api.dependencies import get_config, get_db, verify_auth
 from app.core.config_loader import Config
@@ -106,34 +106,53 @@ def ingest(
 
 @router.get("/ping")
 def ping(cfg: Config = Depends(get_config), db: DBManager = Depends(get_db)):
-    """Unauthenticated identity + lease view. Used (a) by a primary connecting BACK
-    to a secondary during the enroll handshake, and (b) by /promote to probe peers.
-    Returns only non-sensitive identity/leadership info."""
-    return {
-        "ok": True,
-        "server_id": cfg.server.id,
-        "role": _settings(db).get("role"),
-        "leader": CL.lease_state(db.db),
-    }
+    """Unauthenticated identity — used by the primary's back-connection during the
+    enroll handshake. Returns only non-sensitive identity info."""
+    self_doc = db.db.cluster.find_one({"_id": "self"}) or {}
+    return {"ok": True, "server_id": cfg.server.id,
+            "role": _settings(db).get("role"), "is_primary": bool(self_doc.get("is_primary"))}
 
 
 def _settings(db: DBManager) -> dict:
     return db.db.settings.find_one({"_id": "app"}) or {}
 
 
+def _known_priorities(db: DBManager) -> dict:
+    """node_id -> priority across this node's roster + its own self record."""
+    out = {}
+    self_doc = db.db.cluster.find_one({"_id": "self"}) or {}
+    if self_doc.get("node_id") and self_doc.get("priority") is not None:
+        out[self_doc["node_id"]] = self_doc["priority"]
+    for n in db.db.cluster_nodes.find({}, {"_id": 0, "node_id": 1, "priority": 1}):
+        if n.get("priority") is not None:
+            out[n["node_id"]] = n["priority"]
+    return out
+
+
 class EnrollRequest(BaseModel):
     server_id: str
     secondary_url: str   # the secondary's own tailnet address, for the back-connection
     join_token: str
+    priority: int        # 1-99; the primary rejects a priority already taken
 
 
 @router.post("/enroll")
 def enroll(req: EnrollRequest, db: DBManager = Depends(get_db)):
-    """Primary-side of the bidirectional handshake. The request arriving proves
-    secondary->primary. We then connect BACK to secondary_url/ping to prove
-    primary->secondary. Enrollment is recorded ONLY if BOTH directions pass."""
+    """Primary-side of enrollment: validate the token, REJECT a duplicate priority,
+    then prove BIDIRECTIONAL reachability (the request proves secondary->primary; we
+    connect BACK to prove primary->secondary). Recorded only if all three pass."""
     if not _valid_token(db, req.server_id, req.join_token):
         raise HTTPException(status_code=401, detail="invalid or missing join token")
+    if not (1 <= req.priority <= 99):
+        raise HTTPException(status_code=400, detail="priority must be between 1 and 99")
+    # Priority uniqueness — the primary holds the authoritative roster.
+    known = _known_priorities(db)
+    if CC.priority_in_use(
+        {nid: {"priority": p} for nid, p in known.items()}, req.priority, exclude=req.server_id
+    ):
+        taken_by = next(nid for nid, p in known.items() if p == req.priority and nid != req.server_id)
+        raise HTTPException(status_code=409,
+                            detail=f"priority {req.priority} already in use (by '{taken_by}') — pick a free one")
 
     secondary_to_primary = True  # this request reached us
     primary_to_secondary = False
@@ -150,10 +169,17 @@ def enroll(req: EnrollRequest, db: DBManager = Depends(get_db)):
 
     ok = secondary_to_primary and primary_to_secondary
     if ok:
+        now = datetime.now(timezone.utc)
         db.db.federation_servers.update_one(
             {"server_id": req.server_id},
-            {"$set": {"server_id": req.server_id, "url": req.secondary_url,
-                      "enrolled_at": datetime.now(timezone.utc)}},
+            {"$set": {"server_id": req.server_id, "url": req.secondary_url, "enrolled_at": now}},
+            upsert=True,
+        )
+        # Add to the authoritative roster with its priority + address.
+        db.db.cluster_nodes.update_one(
+            {"node_id": req.server_id},
+            {"$set": {"node_id": req.server_id, "priority": req.priority,
+                      "address": req.secondary_url, "is_primary": False, "last_seen": now}},
             upsert=True,
         )
     return {
@@ -165,83 +191,3 @@ def enroll(req: EnrollRequest, db: DBManager = Depends(get_db)):
         },
         "reason": reason if not ok else None,
     }
-
-
-@router.get("/leader")
-def leader(_: str = Depends(verify_auth), cfg: Config = Depends(get_config), db: DBManager = Depends(get_db)):
-    """Current cluster leader + lease state (the source of truth for who is primary)."""
-    st = CL.lease_state(db.db)
-    return {"node_id": cfg.server.id, "is_leader": st["valid"] and st["holder"] == cfg.server.id, "lease": st}
-
-
-def _follow_lease(db: DBManager, leader_id: Optional[str]) -> None:
-    """Mirror the lease holder into settings so the rest of the app + UI can read
-    who the primary is without re-querying the lease."""
-    db.db.settings.update_one({"_id": "app"}, {"$set": {"primary_node": leader_id}}, upsert=True)
-
-
-class PromoteRequest(BaseModel):
-    force: bool = False
-
-
-@router.post("/promote")
-def promote(
-    req: PromoteRequest,
-    actor: str = Depends(verify_auth),
-    cfg: Config = Depends(get_config),
-    db: DBManager = Depends(get_db),
-):
-    """Manually promote THIS node to primary. Guarded:
-      - refuses if any reachable node reports a live leader (incl. the shared lease);
-      - if some nodes are UNREACHABLE, refuses to silently promote — returns
-        needs_force with a warning that the old primary can't be confirmed down;
-      - only `force: true` (an explicit operator confirmation) seizes the lease
-        despite unreachable nodes. Never auto-forces."""
-    node_id = cfg.server.id
-    ttl = cfg.federation.lease_ttl_seconds
-    now = datetime.now(timezone.utc)
-
-    # 1) Shared lease is the primary source of truth.
-    st = CL.lease_state(db.db, now)
-    if st["valid"] and st["holder"] and st["holder"] != node_id:
-        return {"promoted": False, "leader": st["holder"],
-                "reason": f"a live leader already holds the lease: {st['holder']}"}
-
-    # 2) Defense-in-depth: probe every known peer directly over the mesh.
-    foreign_leaders, unreachable = [], []
-    for n in db.db.federation_servers.find({}, {"_id": 0, "server_id": 1, "url": 1}):
-        if n.get("server_id") == node_id or not n.get("url"):
-            continue
-        try:
-            pong = F.ping_node(n["url"])
-            ld = pong.get("leader") or {}
-            if ld.get("valid") and ld.get("holder") and ld.get("holder") != node_id:
-                foreign_leaders.append(ld["holder"])
-        except Exception:  # noqa: BLE001 — node unreachable
-            unreachable.append(n["server_id"])
-
-    if foreign_leaders:
-        return {"promoted": False, "leader": sorted(set(foreign_leaders))[0],
-                "reason": f"a reachable node reports a live leader: {sorted(set(foreign_leaders))}"}
-
-    # 3) No live leader seen anywhere reachable.
-    if unreachable and not req.force:
-        return {
-            "promoted": False, "needs_force": True, "unreachable": unreachable,
-            "warning": ("cannot confirm the previous primary is down — these nodes are "
-                        f"unreachable: {unreachable}. Forcing may create two primaries. "
-                        "Re-submit with force=true only if you are certain the old primary is down."),
-        }
-
-    # 4) Acquire.
-    if req.force:
-        new = CL.force_acquire(db.db, node_id, ttl, now)
-        _follow_lease(db, node_id)
-        return {"promoted": True, "forced": True, "leader": node_id, "lease": new,
-                "warning": "force-acquired despite unconfirmed nodes — verify no second primary is running."}
-    ok = CL.try_acquire_or_renew(db.db, node_id, ttl, now)
-    if ok:
-        _follow_lease(db, node_id)
-    return {"promoted": ok, "forced": False,
-            "leader": node_id if ok else st.get("holder"),
-            "reason": None if ok else "lost the acquire race to another node"}

@@ -65,14 +65,15 @@ class AuthConfig(BaseModel):
 
 
 class FederationConfig(BaseModel):
-    # Background leader-election renewer. OFF by default so installing this code on
-    # a host changes nothing until a fleet is deliberately wired up.
-    lease_enabled: bool = False
-    # Lease validity window. If the leader misses every renewal for this long, the
-    # lease expires and a peer can take over. renew_seconds MUST be << ttl_seconds
-    # so a single dropped renewal (a brief blip) never triggers needless failover.
-    lease_ttl_seconds: int = 15
-    lease_renew_seconds: int = 5
+    # Gossip cluster + failover. OFF by default so installing this code on a host
+    # changes nothing until a real multi-node fleet is deliberately wired up.
+    cluster_enabled: bool = False
+    # Every node health-checks every peer this often. A peer unheard-from for
+    # ~MISS_ROUNDS intervals (unreachable_after) is treated as down; the primary is
+    # considered lost after the same window, which then (in a majority) triggers an
+    # election. Loose enough that a single missed round never causes a failover.
+    health_interval_seconds: int = 10
+    unreachable_after_seconds: int = 30  # 3 missed rounds
 
 
 class Config(BaseModel):

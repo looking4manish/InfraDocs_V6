@@ -93,16 +93,24 @@ def _run_scan_job(scan_id: str, cfg: Config):
         projects_root=cfg.paths.projects_root, valid_projects=valid_projects,
     ))
 
-    # Secondary mode: push this server's scan up to the primary (outbound → NAT-OK).
+    # Data sync: a non-primary pushes its scan to the CURRENT leader (direct mesh).
+    # The target follows gossip — whichever node currently serves as primary — so after
+    # a failover the push retargets automatically. Missing a few rounds is fine (scan
+    # data is re-derivable). No shared DB; reuses the direct /ingest endpoint.
+    self_doc = db.db.cluster.find_one({"_id": "self"}) or {}
     fed = db.db.settings.find_one({"_id": "app"}) or {}
-    if fed.get("role") == "secondary" and fed.get("primary_url") and fed.get("join_token"):
-        try:
-            from app import federation as _federation
-            _federation.push_to_primary(
-                fed["primary_url"], fed["join_token"], cfg.server.id, all_assets, applications,
-            )
-        except Exception:
-            pass  # never fail a scan because the primary is unreachable
+    if not self_doc.get("is_primary") and fed.get("join_token"):
+        from app import cluster as _cluster
+        roster = {n["node_id"]: n for n in db.db.cluster_nodes.find({}, {"_id": 0})}
+        target = _cluster.current_leader_address(roster) or fed.get("primary_url")
+        if target:
+            try:
+                from app import federation as _federation
+                _federation.push_to_primary(
+                    target, fed["join_token"], cfg.server.id, all_assets, applications,
+                )
+            except Exception:
+                pass  # never fail a scan because the leader is unreachable
 
     finished = datetime.now(timezone.utc)
     db.db.scan_logs.update_one(

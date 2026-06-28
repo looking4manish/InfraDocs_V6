@@ -8,6 +8,7 @@ calls (no queue):
 """
 
 import json
+import urllib.error
 import urllib.request
 from typing import List, Optional
 
@@ -39,23 +40,37 @@ def enroll_with_primary(
     advertise_url: str,
     join_token: str,
     server_id: str,
+    priority: int,
     timeout: int = 10,
 ) -> dict:
     """Secondary-side of the bidirectional reachability handshake.
 
-    POSTs to the primary's /enroll with this node's own advertised address. The POST
-    arriving proves secondary->primary; the primary then connects BACK to
-    advertise_url and reports whether primary->secondary worked. Returns a uniform
-    result; a primary we can't even reach is reported as secondary->primary = False
-    (rather than raising), so the wizard can show a clean per-direction verdict.
+    POSTs to the primary's /enroll with this node's own advertised address + desired
+    priority. The POST arriving proves secondary->primary; the primary then connects
+    BACK to advertise_url and reports whether primary->secondary worked (and rejects a
+    duplicate priority). A primary we can't even reach is reported as
+    secondary->primary = False (rather than raising), so the wizard shows a clean verdict.
     """
     base = primary_url.rstrip("/")
     try:
         res = _post_json(
             base + "/api/federation/enroll",
-            {"server_id": server_id, "secondary_url": advertise_url, "join_token": join_token},
+            {"server_id": server_id, "secondary_url": advertise_url,
+             "join_token": join_token, "priority": priority},
             timeout=timeout,
         )
+    except urllib.error.HTTPError as e:
+        # The primary RESPONDED (so secondary->primary works) but rejected enrollment —
+        # e.g. a duplicate priority (409) or a bad token (401). Surface its reason.
+        try:
+            detail = json.loads(e.read().decode()).get("detail")
+        except Exception:  # noqa: BLE001
+            detail = None
+        return {
+            "ok": False,
+            "directions": {"secondary_to_primary": True, "primary_to_secondary": None},
+            "reason": detail or f"primary rejected enrollment (HTTP {e.code})",
+        }
     except Exception as e:  # noqa: BLE001 — any transport error means we couldn't reach the primary
         return {
             "ok": False,
