@@ -171,3 +171,81 @@ role-detected). It is **not yet live anywhere** because the fleet has no roles a
 gating next step is operator-side: run the setup wizard to make OCI the primary and OCI-P/N150
 secondaries, then install per `deploy/systemd/INSTALL.md`. This supersedes "Left for human
 review" items 1 and 3 above (the reaper and the timers now exist).
+
+---
+
+# ═══ DIRECT FEDERATION + LEASE ELECTION (2026-06-28) ═══
+
+Branch `feature/direct-federation-lease-election` (off `main`). **Code only — not
+merged, not deployed, no live host touched.** Replaces the NAT-era outbound
+command-queue model with a direct (Tailscale-mesh) one.
+
+## Removed (commit `b920d35`)
+The whole queue/poll/reap control plane, obsolete on a mesh where every node is
+directly reachable:
+- federation router: `/commands`, `/commands` (list), `/commands/pending`,
+  `/commands/{id}/result`, `reap_stale_commands`, `COMMAND_EXPIRY_SECONDS`.
+- `poll_and_execute()` (app/federation.py); `app/federation_agent.py` (poll+reap CLIs).
+- `deploy/systemd/infradocs-fed-{poll,reap}.*` + INSTALL.md; the `federation_commands`
+  indexes; the frontend Remote-actions panel + its client calls;
+  `tests/test_federation_dispatch.py`.
+- **Kept:** the data plane (`POST /ingest`, `push_to_primary`), token mint, server
+  list, and the guarded actions dispatcher + self-protection (`app/actions.py`).
+
+## Added
+
+**Bidirectional reachability at enroll (commit `38ce943`).** A secondary enrolls
+only if reachability proves out BOTH ways:
+- `POST /api/federation/enroll` (token-auth): the request arriving proves
+  secondary→primary; the primary then connects BACK to the secondary's advertised
+  address (`GET /api/federation/ping`) to prove primary→secondary. Records the
+  enrollment (with the secondary's URL) ONLY if both pass; returns a per-direction
+  verdict + readable reason otherwise.
+- `GET /api/federation/ping`: unauth identity + lease view (the back-connection target).
+- Secondary side: `ping_node()` + `enroll_with_primary()`; an unreachable primary
+  is reported as `secondary→primary=False` rather than raising.
+- Wizard `/complete`: a secondary must pass the handshake (needs `advertise_url`) or
+  it's refused 400 with the per-direction detail; the UI shows ✓/✗ per direction.
+
+**Mongo-lease leader election + manual promote (commits `38ce943`, `38f1b27`).**
+- `app/cluster_lease.py`: one doc (`cluster_lease`, `_id="leader"`). Acquire/renew is
+  a single atomic `find_one_and_update` matching only *expired-or-mine*; with the
+  unique `_id` that is the entire split-brain guard (no heartbeats/terms). On leader
+  death the lease expires and a peer acquires on its next tick — automatic failover.
+- Gated background renewer in the API lifespan (`lease_enabled=false` default → inert
+  until a fleet enables it); `settings.primary_node` follows the lease holder.
+- `POST /api/federation/promote` (manual): refuses if any reachable node reports a
+  live leader; if some nodes are UNREACHABLE it returns `needs_force` + a
+  two-primaries warning instead of promoting; `force=true` seizes only behind that
+  explicit confirm, and NEVER against a confirmed-live leader. UI surfaces the
+  current leader + the guarded promote/force flow.
+
+## Lease defaults (and why)
+`lease_ttl_seconds=15`, `lease_renew_seconds=5` (config + config.yml). The leader
+renews 3× per TTL, so a single missed renewal (a brief blip) does **not** trigger
+failover; it takes ~2 consecutive misses (~10–15s) for a peer to take over. Tight
+enough for quick recovery, loose enough to avoid flapping. `lease_enabled=false` by
+default so merging/installing this code changes nothing until a fleet opts in.
+
+## Tests
+`tests/test_federation_direct.py` (20, all pass): enroll both-pass / either-fail /
+bad-token / identity-mismatch + wizard wiring; lease first-acquire / no-steal /
+exactly-one-winner / renewal-extends / expiry-failover / old-leader-steps-down /
+force / release; promote refuse-live-leader / allow-none / needs-force-on-unreachable
+/ force-acquire / force-still-refused-vs-confirmed-leader.
+
+## ⚠ REVIEW BEFORE DEPLOY
+1. **Lease timing (TTL 15s / renew 5s).** This is the failover-vs-flapping knob and
+   assumes all nodes share one MongoDB reachable over the tailnet with roughly synced
+   clocks (the atomic write is server-side, so modest skew is fine, but wildly wrong
+   clocks would misjudge `expires_at`). Confirm the numbers fit the real mesh latency
+   before enabling `lease_enabled`.
+2. **The manual force path (`promote force=true` / `force_acquire`).** This is the one
+   place that bypasses the atomic guard and CAN create two primaries if the old leader
+   is actually alive but unreachable. It's reachable only behind an explicit operator
+   confirmation and never against a confirmed-live leader — but a human pressing
+   "Force promote anyway" during a partition is the residual two-primary risk. Verify
+   the UI warning copy and consider whether a fence (e.g. step-down on lease-loss
+   detection) is wanted before relying on it in production.
+
+Not merged. Not deployed.
