@@ -74,6 +74,9 @@ export const endpoints = {
   federationServers: () => api.get("/api/federation/servers"),
   mintFederationToken: (server_id) =>
     api.post("/api/federation/tokens", { server_id }),
+  federationLeader: () => api.get("/api/federation/leader"),
+  promoteNode: (force = false) =>
+    api.post("/api/federation/promote", { force }),
 
   // AI layer
   aiStatus: () => api.get("/api/ai/status"),

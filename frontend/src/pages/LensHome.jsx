@@ -299,6 +299,101 @@ function AddServerPanel({ qc }) {
   );
 }
 
+// Current cluster leader (the Mongo-lease holder) + the guarded manual promote.
+// Promote first asks the backend (force=false); if peers are unreachable the
+// backend returns needs_force, and only then do we surface the two-primaries
+// warning + an explicit force button. We never auto-force.
+function ClusterLeaderPanel() {
+  const qc = useQueryClient();
+  const q = useQuery({
+    queryKey: ["federation-leader"],
+    queryFn: () => endpoints.federationLeader().then((r) => r.data),
+    refetchInterval: 5000,
+  });
+  const [pending, setPending] = useState(null); // the needs_force response
+  const [msg, setMsg] = useState(null);
+  const promote = useMutation({
+    mutationFn: (force) => endpoints.promoteNode(force).then((r) => r.data),
+    onSuccess: (d) => {
+      if (d.promoted) {
+        setPending(null);
+        setMsg({ kind: "ok", text: d.forced ? `Force-promoted. ${d.warning || ""}` : "Promoted to primary." });
+        qc.invalidateQueries({ queryKey: ["federation-leader"] });
+      } else if (d.needs_force) {
+        setPending(d);
+        setMsg(null);
+      } else {
+        setPending(null);
+        setMsg({ kind: "err", text: d.reason || "Promotion refused." });
+      }
+    },
+    onError: () => setMsg({ kind: "err", text: "Promotion request failed." }),
+  });
+  const d = q.data;
+  if (!d) return null;
+  const lease = d.lease || {};
+  const holder = lease.valid ? lease.holder : null;
+  return (
+    <div className="neon-panel rounded-xl p-4 mb-4">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[13px] text-zinc-200 font-medium">Cluster leader</span>
+        {holder ? (
+          <span className="text-[12px]">
+            <span className="font-mono text-accent-soft">{holder}</span>
+            {d.is_leader && <span className="text-emerald-300"> (this node)</span>}
+            {lease.forced && <span className="text-amber-300"> · forced</span>}
+          </span>
+        ) : (
+          <span className="text-[12px] text-amber-300">no live leader</span>
+        )}
+        <span className="ml-auto text-[11px] text-zinc-500 font-mono">node: {d.node_id}</span>
+      </div>
+      <div className="text-[11px] text-zinc-500 mt-1">
+        lease {lease.valid ? `valid · renewed ${relTime(lease.renewed_at)}` : "expired / empty"}
+      </div>
+
+      {!d.is_leader && (
+        <div className="mt-3">
+          {!pending ? (
+            <button
+              onClick={() => { setMsg(null); promote.mutate(false); }}
+              disabled={promote.isPending}
+              className="text-[12px] px-3 py-1.5 rounded-lg neon-glow border border-[var(--neon)] bg-[var(--neon)]/10 hover:bg-[var(--neon)]/20 disabled:opacity-50"
+            >
+              {promote.isPending ? "Checking…" : "Promote this node to primary"}
+            </button>
+          ) : (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-[12px]">
+              <div className="text-amber-300 font-medium">⚠ Can't confirm the current primary is down</div>
+              <div className="text-zinc-300 mt-1">{pending.warning}</div>
+              <div className="flex gap-2 mt-2">
+                <button
+                  onClick={() => promote.mutate(true)}
+                  disabled={promote.isPending}
+                  className="text-[12px] px-3 py-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20"
+                >
+                  Force promote anyway
+                </button>
+                <button
+                  onClick={() => setPending(null)}
+                  className="text-[12px] px-3 py-1.5 rounded-lg border border-white/10 text-zinc-300 hover:bg-bg-elev"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+          {msg && (
+            <div className={cn("text-[12px] mt-2", msg.kind === "ok" ? "text-emerald-300" : "text-rose-300")}>
+              {msg.text}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ServersLens({ apps, reduce, selected, setSelected }) {
   const qc = useQueryClient();
   const health = useQuery({
@@ -366,6 +461,8 @@ function ServersLens({ apps, reduce, selected, setSelected }) {
           {adding ? "× Close" : "+ Add a server"}
         </button>
       </div>
+
+      <ClusterLeaderPanel />
 
       {adding && <AddServerPanel qc={qc} />}
 
