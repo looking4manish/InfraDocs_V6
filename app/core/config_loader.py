@@ -64,6 +64,17 @@ class AuthConfig(BaseModel):
     dev_password: str = "changeme"
 
 
+class FederationConfig(BaseModel):
+    # Background leader-election renewer. OFF by default so installing this code on
+    # a host changes nothing until a fleet is deliberately wired up.
+    lease_enabled: bool = False
+    # Lease validity window. If the leader misses every renewal for this long, the
+    # lease expires and a peer can take over. renew_seconds MUST be << ttl_seconds
+    # so a single dropped renewal (a brief blip) never triggers needless failover.
+    lease_ttl_seconds: int = 15
+    lease_renew_seconds: int = 5
+
+
 class Config(BaseModel):
     server: ServerConfig
     features: FeaturesConfig
@@ -72,6 +83,7 @@ class Config(BaseModel):
     scanning: ScanningConfig
     logging: LoggingConfig
     auth: AuthConfig
+    federation: FederationConfig = FederationConfig()
 
 
 def load_config(config_path: str = "config.yml") -> Config:

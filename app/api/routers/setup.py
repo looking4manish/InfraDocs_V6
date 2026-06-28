@@ -12,7 +12,7 @@ import subprocess
 import urllib.request
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app import auth as A
@@ -149,6 +149,7 @@ class CompleteRequest(BaseModel):
     domain: Optional[str] = None
     primary_url: Optional[str] = None    # for secondary
     join_token: Optional[str] = None     # for secondary
+    advertise_url: Optional[str] = None  # for secondary: this node's own reachable address
     # Optional AI labeling — any OpenAI-compatible endpoint (OpenAI / local Ollama / …).
     ai_endpoint: Optional[str] = None
     ai_key: Optional[str] = None
@@ -157,6 +158,29 @@ class CompleteRequest(BaseModel):
 
 @router.post("/complete")
 def complete(req: CompleteRequest, actor: str = Depends(verify_auth), db: DBManager = Depends(get_db)):
+    # A secondary must prove BIDIRECTIONAL reachability with the primary before we
+    # persist anything — both directions, or enrollment is refused with a reason.
+    if req.role == "secondary":
+        if not (req.primary_url and req.join_token and req.advertise_url):
+            raise HTTPException(
+                status_code=400,
+                detail="secondary needs primary_url, join_token, and this server's advertise_url",
+            )
+        from app import federation as F
+        result = F.enroll_with_primary(
+            req.primary_url, req.advertise_url, req.join_token, _server_id(),
+        )
+        if not result.get("ok"):
+            d = result.get("directions", {})
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "enrollment refused — both directions must be reachable",
+                    "directions": d,
+                    "reason": result.get("reason"),
+                },
+            )
+
     patch = {
         "setup_complete": True,
         "server_name": req.server_name,
@@ -165,6 +189,7 @@ def complete(req: CompleteRequest, actor: str = Depends(verify_auth), db: DBMana
         "domain": req.domain,
         "primary_url": req.primary_url,
         "join_token": req.join_token,
+        "advertise_url": req.advertise_url,
         "completed_by": actor,
     }
     # Only overwrite AI config when provided (so re-running setup doesn't wipe it).
@@ -175,4 +200,9 @@ def complete(req: CompleteRequest, actor: str = Depends(verify_auth), db: DBMana
     if req.ai_model:
         patch["ai_model"] = req.ai_model
     _save_settings(db, patch)
-    return {"ok": True, "setup_complete": True}
+    return {"ok": True, "setup_complete": True, "role": req.role}
+
+
+def _server_id() -> str:
+    from app.core.config_loader import get_config
+    return get_config().server.id

@@ -1,5 +1,6 @@
 """InfraDocs V6 API entry point."""
 
+import asyncio  # noqa: E402
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -12,11 +13,34 @@ ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(ROOT / ".env", override=False)
 
 from app import auth as _auth  # noqa: E402
+from app import cluster_lease as _lease  # noqa: E402
 from app.api.dependencies import get_config, get_db  # noqa: E402
 from app.api.routers import (  # noqa: E402
     actions, ai, applications, assets, auth, endpoints, federation, health, ports, projects, scans, setup, storage,
 )
 from app.core.logger import setup_logger  # noqa: E402
+
+
+async def _lease_renewer(cfg, db, logger):
+    """Every renew_seconds, atomically try to hold the lease; mirror the holder into
+    settings.primary_node so 'who is primary' follows the lease. Renewal failing
+    just means a peer is leader — we stay a follower and keep trying. Blocking pymongo
+    calls run in a thread so the event loop is never stalled."""
+    node_id, ttl, renew = cfg.server.id, cfg.federation.lease_ttl_seconds, cfg.federation.lease_renew_seconds
+    while True:
+        try:
+            held = await asyncio.to_thread(_lease.try_acquire_or_renew, db.db, node_id, ttl)
+            st = await asyncio.to_thread(_lease.lease_state, db.db)
+            await asyncio.to_thread(
+                lambda: db.db.settings.update_one(
+                    {"_id": "app"}, {"$set": {"primary_node": st.get("holder")}}, upsert=True
+                )
+            )
+            if held:
+                logger.debug("lease renewed by %s", node_id)
+        except Exception as e:  # noqa: BLE001 — never let a transient DB blip kill the loop
+            logger.warning("lease renew tick failed: %s", e)
+        await asyncio.sleep(renew)
 
 
 @asynccontextmanager
@@ -27,9 +51,16 @@ async def lifespan(app: FastAPI):
     db.create_indexes()
     _auth.seed_default_admin(db, cfg.auth.username)
     logger.info(f"API started for server '{cfg.server.id}'")
+    renewer = None
+    if cfg.federation.lease_enabled:
+        renewer = asyncio.create_task(_lease_renewer(cfg, db, logger))
+        logger.info("leader-election renewer started (ttl=%ss renew=%ss)",
+                    cfg.federation.lease_ttl_seconds, cfg.federation.lease_renew_seconds)
     try:
         yield
     finally:
+        if renewer:
+            renewer.cancel()
         db.close()
         logger.info("API shutdown complete")
 

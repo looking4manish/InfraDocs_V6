@@ -48,3 +48,12 @@ auth:
   # password is read from env INFRADOCS_API_PASSWORD; falls back to dev default
   password_env: INFRADOCS_API_PASSWORD
   dev_password: msinha123
+
+federation:
+  # Mongo-lease leader election. Disabled by default — turn on only once a real
+  # multi-node fleet shares one MongoDB and you want automatic failover.
+  lease_enabled: false
+  # TTL 15s / renew 5s: the leader renews 3x per TTL, so one missed renewal (a
+  # brief network blip) does NOT cause a failover; ~2 consecutive misses do.
+  lease_ttl_seconds: 15
+  lease_renew_seconds: 5
