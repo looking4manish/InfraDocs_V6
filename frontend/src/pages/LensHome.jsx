@@ -299,26 +299,27 @@ function AddServerPanel({ qc }) {
   );
 }
 
-// Current cluster leader (the Mongo-lease holder) + the guarded manual promote.
-// Promote first asks the backend (force=false); if peers are unreachable the
-// backend returns needs_force, and only then do we surface the two-primaries
+// Live cluster: nodes + priorities + current leader + override + per-node reachability,
+// plus the guarded manual promote and the override (pin) toggle. Promote first asks the
+// backend (force=false); only if peers are unreachable do we surface the two-primaries
 // warning + an explicit force button. We never auto-force.
 function ClusterLeaderPanel() {
   const qc = useQueryClient();
   const q = useQuery({
-    queryKey: ["federation-leader"],
-    queryFn: () => endpoints.federationLeader().then((r) => r.data),
+    queryKey: ["cluster-state"],
+    queryFn: () => endpoints.clusterState().then((r) => r.data),
     refetchInterval: 5000,
   });
-  const [pending, setPending] = useState(null); // the needs_force response
+  const [pending, setPending] = useState(null);
   const [msg, setMsg] = useState(null);
+  const refresh = () => qc.invalidateQueries({ queryKey: ["cluster-state"] });
   const promote = useMutation({
-    mutationFn: (force) => endpoints.promoteNode(force).then((r) => r.data),
+    mutationFn: (force) => endpoints.clusterPromote(force).then((r) => r.data),
     onSuccess: (d) => {
       if (d.promoted) {
         setPending(null);
         setMsg({ kind: "ok", text: d.forced ? `Force-promoted. ${d.warning || ""}` : "Promoted to primary." });
-        qc.invalidateQueries({ queryKey: ["federation-leader"] });
+        refresh();
       } else if (d.needs_force) {
         setPending(d);
         setMsg(null);
@@ -329,32 +330,56 @@ function ClusterLeaderPanel() {
     },
     onError: () => setMsg({ kind: "err", text: "Promotion request failed." }),
   });
+  const override = useMutation({
+    mutationFn: (value) => endpoints.clusterOverride(value).then((r) => r.data),
+    onSuccess: refresh,
+  });
   const d = q.data;
   if (!d) return null;
-  const lease = d.lease || {};
-  const holder = lease.valid ? lease.holder : null;
+  const leader = d.current_leader;
+
   return (
     <div className="neon-panel rounded-xl p-4 mb-4">
       <div className="flex items-center gap-2 flex-wrap">
-        <span className="text-[13px] text-zinc-200 font-medium">Cluster leader</span>
-        {holder ? (
+        <span className="text-[13px] text-zinc-200 font-medium">Cluster</span>
+        {leader ? (
           <span className="text-[12px]">
-            <span className="font-mono text-accent-soft">{holder}</span>
-            {d.is_leader && <span className="text-emerald-300"> (this node)</span>}
-            {lease.forced && <span className="text-amber-300"> · forced</span>}
+            leader <span className="font-mono text-accent-soft">{leader}</span>
+            {leader === d.node_id && <span className="text-emerald-300"> (this node)</span>}
           </span>
         ) : (
-          <span className="text-[12px] text-amber-300">no live leader</span>
+          <span className="text-[12px] text-amber-300">no current leader</span>
         )}
-        <span className="ml-auto text-[11px] text-zinc-500 font-mono">node: {d.node_id}</span>
-      </div>
-      <div className="text-[11px] text-zinc-500 mt-1">
-        lease {lease.valid ? `valid · renewed ${relTime(lease.renewed_at)}` : "expired / empty"}
+        {d.override && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300">override pinned</span>}
+        {!d.majority && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-rose-500/15 text-rose-300">no majority</span>}
+        <span className="ml-auto text-[11px] text-zinc-500 font-mono">this node: {d.node_id} · p{d.priority ?? "—"}</span>
       </div>
 
-      {!d.is_leader && (
-        <div className="mt-3">
-          {!pending ? (
+      {/* roster: priority, reachability, leader marker */}
+      <div className="mt-3 flex flex-col gap-1">
+        {[...(d.nodes || [])].sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99)).map((n) => (
+          <div key={n.node_id} className="flex items-center gap-2 text-[12px]">
+            <span className={cn("w-1.5 h-1.5 rounded-full", n.reachable ? "bg-emerald-400" : "bg-zinc-600")} />
+            <span className="font-mono text-zinc-500 w-8">p{n.priority ?? "—"}</span>
+            <span className={cn("font-mono", n.is_primary ? "text-accent-soft" : "text-zinc-300")}>{n.node_id}</span>
+            {n.is_primary && <span className="text-[10px] text-emerald-300">primary</span>}
+            {n.self && <span className="text-[10px] text-zinc-500">this node</span>}
+            <span className="ml-auto text-[10.5px] text-zinc-600">{n.reachable ? "reachable" : "unreachable"}</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-3 flex items-center gap-2 flex-wrap">
+        {leader === d.node_id ? (
+          <button
+            onClick={() => override.mutate(!d.override)}
+            disabled={override.isPending}
+            className="text-[12px] px-3 py-1.5 rounded-lg border border-white/10 text-zinc-300 hover:bg-bg-elev disabled:opacity-50"
+          >
+            {d.override ? "Clear override (allow elections)" : "Override: pin this primary"}
+          </button>
+        ) : (
+          !pending && (
             <button
               onClick={() => { setMsg(null); promote.mutate(false); }}
               disabled={promote.isPending}
@@ -362,32 +387,34 @@ function ClusterLeaderPanel() {
             >
               {promote.isPending ? "Checking…" : "Promote this node to primary"}
             </button>
-          ) : (
-            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-[12px]">
-              <div className="text-amber-300 font-medium">⚠ Can't confirm the current primary is down</div>
-              <div className="text-zinc-300 mt-1">{pending.warning}</div>
-              <div className="flex gap-2 mt-2">
-                <button
-                  onClick={() => promote.mutate(true)}
-                  disabled={promote.isPending}
-                  className="text-[12px] px-3 py-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20"
-                >
-                  Force promote anyway
-                </button>
-                <button
-                  onClick={() => setPending(null)}
-                  className="text-[12px] px-3 py-1.5 rounded-lg border border-white/10 text-zinc-300 hover:bg-bg-elev"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-          {msg && (
-            <div className={cn("text-[12px] mt-2", msg.kind === "ok" ? "text-emerald-300" : "text-rose-300")}>
-              {msg.text}
-            </div>
-          )}
+          )
+        )}
+      </div>
+
+      {pending && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-[12px] mt-2">
+          <div className="text-amber-300 font-medium">⚠ Can't confirm the current primary is down</div>
+          <div className="text-zinc-300 mt-1">{pending.warning}</div>
+          <div className="flex gap-2 mt-2">
+            <button
+              onClick={() => promote.mutate(true)}
+              disabled={promote.isPending}
+              className="text-[12px] px-3 py-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20"
+            >
+              Force promote anyway
+            </button>
+            <button
+              onClick={() => setPending(null)}
+              className="text-[12px] px-3 py-1.5 rounded-lg border border-white/10 text-zinc-300 hover:bg-bg-elev"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {msg && (
+        <div className={cn("text-[12px] mt-2", msg.kind === "ok" ? "text-emerald-300" : "text-rose-300")}>
+          {msg.text}
         </div>
       )}
     </div>

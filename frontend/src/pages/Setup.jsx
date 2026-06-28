@@ -44,6 +44,7 @@ export default function Setup({ onDone }) {
   const [primaryUrl, setPrimaryUrl] = useState("");
   const [joinToken, setJoinToken] = useState("");
   const [advertiseUrl, setAdvertiseUrl] = useState("");
+  const [priority, setPriority] = useState("");
   const [reach, setReach] = useState(null); // bidirectional enroll result
   const [exposure, setExposure] = useState("domain");
   const [domain, setDomain] = useState("");
@@ -82,6 +83,7 @@ export default function Setup({ onDone }) {
         primary_url: role === "secondary" ? primaryUrl || null : null,
         join_token: role === "secondary" ? joinToken || null : null,
         advertise_url: role === "secondary" ? advertiseUrl || null : null,
+        priority: role === "secondary" && priority ? Number(priority) : null,
         ai_endpoint: aiEndpoint || null,
         ai_key: aiKey || null,
         ai_model: aiModel || null,
@@ -136,9 +138,14 @@ export default function Setup({ onDone }) {
               <input className={field}
                 placeholder="This server's address — how the primary reaches you (e.g. http://100.x.y.z:8090)"
                 value={advertiseUrl} onChange={(e) => setAdvertiseUrl(e.target.value)} />
+              <input className={field} type="number" min="1" max="99"
+                placeholder="Failover priority 1-99 (1 = highest; must be free)"
+                value={priority} onChange={(e) => setPriority(e.target.value)} />
               <div className="text-[11px] text-zinc-500 -mt-0.5">
-                Enrollment proves reachability <span className="text-zinc-300">both ways</span> before it's
-                accepted — your call to the primary, and the primary's call back to you.
+                Lower number = higher priority for becoming primary on failover. The primary
+                rejects a priority already in use. Enrollment also proves reachability{" "}
+                <span className="text-zinc-300">both ways</span> — your call to the primary, and
+                the primary's call back to you.
               </div>
               {reach && (
                 <div className="rounded-lg border border-white/10 bg-black/30 p-3 text-sm flex flex-col gap-1.5">
