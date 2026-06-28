@@ -299,104 +299,124 @@ function AddServerPanel({ qc }) {
   );
 }
 
-// Actions a remote secondary can run (subset of the local allow-list that's
-// safe to drive from a free-text asset id — read/lifecycle verbs).
-const REMOTE_ACTIONS = ["restart", "start", "stop", "logs", "status"];
-
-function CmdStatusBadge({ status }) {
-  const tone =
-    {
-      pending: "bg-amber-500/15 text-amber-300",
-      dispatched: "bg-sky-500/15 text-sky-300",
-      success: "bg-emerald-500/15 text-emerald-300",
-      failed: "bg-rose-500/15 text-rose-300",
-      refused: "bg-zinc-700/40 text-zinc-300",
-    }[status] || "bg-zinc-700/40 text-zinc-300";
-  return <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full shrink-0", tone)}>{status}</span>;
-}
-
-// Minimal dispatch affordance: queue an action for a secondary and watch it
-// run. Commands complete asynchronously (the secondary polls), so the list
-// auto-refreshes until results land.
-function RemoteActionsPanel({ serverId }) {
+// Live cluster: nodes + priorities + current leader + override + per-node reachability,
+// plus the guarded manual promote and the override (pin) toggle. Promote first asks the
+// backend (force=false); only if peers are unreachable do we surface the two-primaries
+// warning + an explicit force button. We never auto-force.
+function ClusterLeaderPanel() {
   const qc = useQueryClient();
-  const [assetId, setAssetId] = useState("");
-  const [action, setAction] = useState("restart");
-  const cmds = useQuery({
-    queryKey: ["fed-commands", serverId],
-    queryFn: () => endpoints.listFederationCommands(serverId).then((r) => r.data),
-    refetchInterval: 4000,
+  const q = useQuery({
+    queryKey: ["cluster-state"],
+    queryFn: () => endpoints.clusterState().then((r) => r.data),
+    refetchInterval: 5000,
   });
-  const dispatch = useMutation({
-    mutationFn: () =>
-      endpoints.dispatchFederationCommand(serverId, assetId.trim(), action).then((r) => r.data),
-    onSuccess: () => {
-      setAssetId("");
-      qc.invalidateQueries({ queryKey: ["fed-commands", serverId] });
+  const [pending, setPending] = useState(null);
+  const [msg, setMsg] = useState(null);
+  const refresh = () => qc.invalidateQueries({ queryKey: ["cluster-state"] });
+  const promote = useMutation({
+    mutationFn: (force) => endpoints.clusterPromote(force).then((r) => r.data),
+    onSuccess: (d) => {
+      if (d.promoted) {
+        setPending(null);
+        setMsg({ kind: "ok", text: d.forced ? `Force-promoted. ${d.warning || ""}` : "Promoted to primary." });
+        refresh();
+      } else if (d.needs_force) {
+        setPending(d);
+        setMsg(null);
+      } else {
+        setPending(null);
+        setMsg({ kind: "err", text: d.reason || "Promotion refused." });
+      }
     },
+    onError: () => setMsg({ kind: "err", text: "Promotion request failed." }),
   });
-  const rows = cmds.data?.commands || [];
+  const override = useMutation({
+    mutationFn: (value) => endpoints.clusterOverride(value).then((r) => r.data),
+    onSuccess: refresh,
+  });
+  const d = q.data;
+  if (!d) return null;
+  const leader = d.current_leader;
+
   return (
-    <div className="neon-panel rounded-xl p-4 mt-4">
-      <div className="text-[13px] text-zinc-200 mb-1 font-medium">Remote actions · {serverId}</div>
-      <p className="text-[12px] text-zinc-500 mb-3">
-        Queue an action for this secondary. It runs on the secondary's next poll
-        (outbound, NAT-friendly) through the same guarded dispatcher as local actions
-        — <span className="font-mono text-zinc-400">infradocs-v6-*</span> units are refused — then
-        reports back, fully audited.
-      </p>
-      <div className="flex gap-2 items-center flex-wrap mb-3">
-        <input
-          value={assetId}
-          onChange={(e) => setAssetId(e.target.value)}
-          placeholder="asset id (from the Assets table)"
-          className="bg-bg-elev border border-bg-hover rounded-lg px-3 py-1.5 text-[13px] text-zinc-200 font-mono focus:outline-none focus:border-accent/40 flex-1 min-w-[220px]"
-        />
-        <select
-          value={action}
-          onChange={(e) => setAction(e.target.value)}
-          className="bg-bg-elev border border-bg-hover rounded-lg px-3 py-1.5 text-[13px] text-zinc-200"
-        >
-          {REMOTE_ACTIONS.map((a) => (
-            <option key={a} value={a}>{a}</option>
-          ))}
-        </select>
-        <button
-          onClick={() => dispatch.mutate()}
-          disabled={!assetId.trim() || dispatch.isPending}
-          className="text-[12px] px-3 py-1.5 rounded-lg disabled:opacity-50 neon-glow border border-[var(--neon)] bg-[var(--neon)]/10 hover:bg-[var(--neon)]/20"
-        >
-          {dispatch.isPending ? "Dispatching…" : "Dispatch"}
-        </button>
+    <div className="neon-panel rounded-xl p-4 mb-4">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[13px] text-zinc-200 font-medium">Cluster</span>
+        {leader ? (
+          <span className="text-[12px]">
+            leader <span className="font-mono text-accent-soft">{leader}</span>
+            {leader === d.node_id && <span className="text-emerald-300"> (this node)</span>}
+          </span>
+        ) : (
+          <span className="text-[12px] text-amber-300">no current leader</span>
+        )}
+        {d.override && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-300">override pinned</span>}
+        {!d.majority && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-rose-500/15 text-rose-300">no majority</span>}
+        <span className="ml-auto text-[11px] text-zinc-500 font-mono">this node: {d.node_id} · p{d.priority ?? "—"}</span>
       </div>
-      {dispatch.isError && (
-        <div className="text-[12px] text-rose-300 mb-2">
-          {dispatch.error?.response?.data?.detail || "dispatch failed"}
-        </div>
-      )}
-      <div className="space-y-1.5">
-        {rows.length === 0 && <div className="text-[12px] text-zinc-500">No commands dispatched yet.</div>}
-        {rows.map((c) => (
-          <div key={c.command_id} className="bg-black/30 border border-bg-hover rounded-lg px-3 py-2 text-[12px]">
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-zinc-200">{c.action}</span>
-              <span className="text-zinc-500 font-mono truncate">{c.asset?.name || c.asset?.asset_id}</span>
-              <CmdStatusBadge status={c.status} />
-              <span className="ml-auto text-zinc-600 font-mono text-[10.5px]">{relTime(c.created_at)}</span>
-            </div>
-            {c.result?.stdout && (
-              <pre className="text-[11px] text-zinc-400 mt-1 whitespace-pre-wrap break-all max-h-24 overflow-auto">
-                {c.result.stdout.slice(0, 600)}
-              </pre>
-            )}
-            {c.result?.stderr && (
-              <pre className="text-[11px] text-rose-300/80 mt-1 whitespace-pre-wrap break-all max-h-24 overflow-auto">
-                {c.result.stderr.slice(0, 600)}
-              </pre>
-            )}
+
+      {/* roster: priority, reachability, leader marker */}
+      <div className="mt-3 flex flex-col gap-1">
+        {[...(d.nodes || [])].sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99)).map((n) => (
+          <div key={n.node_id} className="flex items-center gap-2 text-[12px]">
+            <span className={cn("w-1.5 h-1.5 rounded-full", n.reachable ? "bg-emerald-400" : "bg-zinc-600")} />
+            <span className="font-mono text-zinc-500 w-8">p{n.priority ?? "—"}</span>
+            <span className={cn("font-mono", n.is_primary ? "text-accent-soft" : "text-zinc-300")}>{n.node_id}</span>
+            {n.is_primary && <span className="text-[10px] text-emerald-300">primary</span>}
+            {n.self && <span className="text-[10px] text-zinc-500">this node</span>}
+            <span className="ml-auto text-[10.5px] text-zinc-600">{n.reachable ? "reachable" : "unreachable"}</span>
           </div>
         ))}
       </div>
+
+      <div className="mt-3 flex items-center gap-2 flex-wrap">
+        {leader === d.node_id ? (
+          <button
+            onClick={() => override.mutate(!d.override)}
+            disabled={override.isPending}
+            className="text-[12px] px-3 py-1.5 rounded-lg border border-white/10 text-zinc-300 hover:bg-bg-elev disabled:opacity-50"
+          >
+            {d.override ? "Clear override (allow elections)" : "Override: pin this primary"}
+          </button>
+        ) : (
+          !pending && (
+            <button
+              onClick={() => { setMsg(null); promote.mutate(false); }}
+              disabled={promote.isPending}
+              className="text-[12px] px-3 py-1.5 rounded-lg neon-glow border border-[var(--neon)] bg-[var(--neon)]/10 hover:bg-[var(--neon)]/20 disabled:opacity-50"
+            >
+              {promote.isPending ? "Checking…" : "Promote this node to primary"}
+            </button>
+          )
+        )}
+      </div>
+
+      {pending && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-[12px] mt-2">
+          <div className="text-amber-300 font-medium">⚠ Can't confirm the current primary is down</div>
+          <div className="text-zinc-300 mt-1">{pending.warning}</div>
+          <div className="flex gap-2 mt-2">
+            <button
+              onClick={() => promote.mutate(true)}
+              disabled={promote.isPending}
+              className="text-[12px] px-3 py-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20"
+            >
+              Force promote anyway
+            </button>
+            <button
+              onClick={() => setPending(null)}
+              className="text-[12px] px-3 py-1.5 rounded-lg border border-white/10 text-zinc-300 hover:bg-bg-elev"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {msg && (
+        <div className={cn("text-[12px] mt-2", msg.kind === "ok" ? "text-emerald-300" : "text-rose-300")}>
+          {msg.text}
+        </div>
+      )}
     </div>
   );
 }
@@ -469,6 +489,8 @@ function ServersLens({ apps, reduce, selected, setSelected }) {
         </button>
       </div>
 
+      <ClusterLeaderPanel />
+
       {adding && <AddServerPanel qc={qc} />}
 
       {servers.length > 0 && (
@@ -499,10 +521,6 @@ function ServersLens({ apps, reduce, selected, setSelected }) {
           <ServerCard key={s.id} s={s} reduce={reduce} onOpen={() => setSelected(s.id)} />
         ))}
       </motion.div>
-
-      {selected && servers.find((s) => s.id === selected)?.role === "secondary" && (
-        <RemoteActionsPanel serverId={selected} />
-      )}
 
       {!loading && servers.length === 0 && (
         <div className="text-sm text-zinc-500">

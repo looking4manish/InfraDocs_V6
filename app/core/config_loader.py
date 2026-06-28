@@ -64,6 +64,18 @@ class AuthConfig(BaseModel):
     dev_password: str = "changeme"
 
 
+class FederationConfig(BaseModel):
+    # Gossip cluster + failover. OFF by default so installing this code on a host
+    # changes nothing until a real multi-node fleet is deliberately wired up.
+    cluster_enabled: bool = False
+    # Every node health-checks every peer this often. A peer unheard-from for
+    # ~MISS_ROUNDS intervals (unreachable_after) is treated as down; the primary is
+    # considered lost after the same window, which then (in a majority) triggers an
+    # election. Loose enough that a single missed round never causes a failover.
+    health_interval_seconds: int = 10
+    unreachable_after_seconds: int = 30  # 3 missed rounds
+
+
 class Config(BaseModel):
     server: ServerConfig
     features: FeaturesConfig
@@ -72,6 +84,7 @@ class Config(BaseModel):
     scanning: ScanningConfig
     logging: LoggingConfig
     auth: AuthConfig
+    federation: FederationConfig = FederationConfig()
 
 
 def load_config(config_path: str = "config.yml") -> Config:

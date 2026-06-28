@@ -171,3 +171,170 @@ role-detected). It is **not yet live anywhere** because the fleet has no roles a
 gating next step is operator-side: run the setup wizard to make OCI the primary and OCI-P/N150
 secondaries, then install per `deploy/systemd/INSTALL.md`. This supersedes "Left for human
 review" items 1 and 3 above (the reaper and the timers now exist).
+
+---
+
+# ═══ DIRECT FEDERATION + LEASE ELECTION (2026-06-28) ═══
+
+Branch `feature/direct-federation-lease-election` (off `main`). **Code only — not
+merged, not deployed, no live host touched.** Replaces the NAT-era outbound
+command-queue model with a direct (Tailscale-mesh) one.
+
+## Removed (commit `b920d35`)
+The whole queue/poll/reap control plane, obsolete on a mesh where every node is
+directly reachable:
+- federation router: `/commands`, `/commands` (list), `/commands/pending`,
+  `/commands/{id}/result`, `reap_stale_commands`, `COMMAND_EXPIRY_SECONDS`.
+- `poll_and_execute()` (app/federation.py); `app/federation_agent.py` (poll+reap CLIs).
+- `deploy/systemd/infradocs-fed-{poll,reap}.*` + INSTALL.md; the `federation_commands`
+  indexes; the frontend Remote-actions panel + its client calls;
+  `tests/test_federation_dispatch.py`.
+- **Kept:** the data plane (`POST /ingest`, `push_to_primary`), token mint, server
+  list, and the guarded actions dispatcher + self-protection (`app/actions.py`).
+
+## Added
+
+**Bidirectional reachability at enroll (commit `38ce943`).** A secondary enrolls
+only if reachability proves out BOTH ways:
+- `POST /api/federation/enroll` (token-auth): the request arriving proves
+  secondary→primary; the primary then connects BACK to the secondary's advertised
+  address (`GET /api/federation/ping`) to prove primary→secondary. Records the
+  enrollment (with the secondary's URL) ONLY if both pass; returns a per-direction
+  verdict + readable reason otherwise.
+- `GET /api/federation/ping`: unauth identity + lease view (the back-connection target).
+- Secondary side: `ping_node()` + `enroll_with_primary()`; an unreachable primary
+  is reported as `secondary→primary=False` rather than raising.
+- Wizard `/complete`: a secondary must pass the handshake (needs `advertise_url`) or
+  it's refused 400 with the per-direction detail; the UI shows ✓/✗ per direction.
+
+**Mongo-lease leader election + manual promote (commits `38ce943`, `38f1b27`).**
+- `app/cluster_lease.py`: one doc (`cluster_lease`, `_id="leader"`). Acquire/renew is
+  a single atomic `find_one_and_update` matching only *expired-or-mine*; with the
+  unique `_id` that is the entire split-brain guard (no heartbeats/terms). On leader
+  death the lease expires and a peer acquires on its next tick — automatic failover.
+- Gated background renewer in the API lifespan (`lease_enabled=false` default → inert
+  until a fleet enables it); `settings.primary_node` follows the lease holder.
+- `POST /api/federation/promote` (manual): refuses if any reachable node reports a
+  live leader; if some nodes are UNREACHABLE it returns `needs_force` + a
+  two-primaries warning instead of promoting; `force=true` seizes only behind that
+  explicit confirm, and NEVER against a confirmed-live leader. UI surfaces the
+  current leader + the guarded promote/force flow.
+
+## Lease defaults (and why)
+`lease_ttl_seconds=15`, `lease_renew_seconds=5` (config + config.yml). The leader
+renews 3× per TTL, so a single missed renewal (a brief blip) does **not** trigger
+failover; it takes ~2 consecutive misses (~10–15s) for a peer to take over. Tight
+enough for quick recovery, loose enough to avoid flapping. `lease_enabled=false` by
+default so merging/installing this code changes nothing until a fleet opts in.
+
+## Tests
+`tests/test_federation_direct.py` (20, all pass): enroll both-pass / either-fail /
+bad-token / identity-mismatch + wizard wiring; lease first-acquire / no-steal /
+exactly-one-winner / renewal-extends / expiry-failover / old-leader-steps-down /
+force / release; promote refuse-live-leader / allow-none / needs-force-on-unreachable
+/ force-acquire / force-still-refused-vs-confirmed-leader.
+
+## ⚠ REVIEW BEFORE DEPLOY
+1. **Lease timing (TTL 15s / renew 5s).** This is the failover-vs-flapping knob and
+   assumes all nodes share one MongoDB reachable over the tailnet with roughly synced
+   clocks (the atomic write is server-side, so modest skew is fine, but wildly wrong
+   clocks would misjudge `expires_at`). Confirm the numbers fit the real mesh latency
+   before enabling `lease_enabled`.
+2. **The manual force path (`promote force=true` / `force_acquire`).** This is the one
+   place that bypasses the atomic guard and CAN create two primaries if the old leader
+   is actually alive but unreachable. It's reachable only behind an explicit operator
+   confirmation and never against a confirmed-live leader — but a human pressing
+   "Force promote anyway" during a partition is the residual two-primary risk. Verify
+   the UI warning copy and consider whether a fence (e.g. step-down on lease-loss
+   detection) is wanted before relying on it in production.
+
+Not merged. Not deployed.
+
+---
+
+# ═══ PRIORITY-RANKED GOSSIP CLUSTER + FAILOVER (2026-06-28) ═══
+
+Branch `feature/priority-failover-cluster`. **Code only — not merged, not deployed, no
+live host touched.** Replaces the Mongo-lease election with a priority-ranked,
+gossip-based cluster that coordinates purely node-to-node (every node runs its OWN Mongo
+— NO shared coordination DB).
+
+## ⚠ Base-branch decision (read first)
+The task said "branch off current main", but also "KEEP the bidirectional reachability
+enroll gate + the manual promote control" and "REMOVE app/cluster_lease.py" — all of
+which live only on `feature/direct-federation-lease-election`, which was **never merged
+to main**. Branching off bare `main` would lose the KEEP items and make the REMOVE a
+no-op. I therefore branched off `feature/direct-federation-lease-election` (= main + the
+direct-federation work), the only base where the REMOVE/KEEP instructions are coherent.
+**If `main` was supposed to already contain that work, merge it first and rebase this.**
+
+## Removed
+`app/cluster_lease.py` + the lifespan lease renewer + the lease-based `/federation/leader`
+and `/federation/promote` + the lease config. (The queue/poll/reap was already gone.)
+
+## Added
+- **`app/cluster.py` (pure, the core):** reachability, `has_majority` (strict),
+  `evaluate_cluster()` returning one of stay/frozen/follow/promote_self/step_down/
+  wait_election/no_leader; `merge_gossip` (roster self-heal, incl. transitive peer
+  learning); `priority_in_use`; `current_leader_address`.
+- **`app/cluster_manager.py` (gated, default off):** the 10s gossip loop — pull every
+  peer's `/api/cluster/health`, self-heal the roster, run `evaluate_cluster`, apply
+  (become/relinquish primary). Tracks the one-round election grace.
+- **`app/api/routers/cluster.py`:** `/health` (gossip msg), `/state` (UI), `/override`
+  (pin), `/promote` (guarded restore path).
+- **Priority on enroll:** `/federation/enroll` carries a priority; the primary REJECTS a
+  duplicate (409 "priority N already in use") and adds the node to its roster. First node
+  (primary/standalone) auto-gets priority 1 + is_primary; a secondary picks a free one.
+- **Data sync:** after a scan a non-primary pushes to the CURRENT leader (follows gossip,
+  retargets after failover) via the existing `/ingest` — no shared DB.
+- **UI serving:** app-level 302 leader redirect (API root + a `ClusterRedirectGate` in
+  the SPA) — no VIP/keepalived. Servers lens shows nodes/priorities/leader/override/
+  reachability; Setup takes a priority.
+- **Config:** `cluster_enabled` (off), `health_interval_seconds=10`,
+  `unreachable_after_seconds=30` (3 missed rounds).
+
+## How the guarantees hold
+- **Split-brain / no double-primary:** the MAJORITY GUARD is applied to *both* the
+  incumbent (a primary that loses majority STEPS DOWN) and to any would-be electors (a
+  minority partition never self-promotes). Election picks the lowest priority number in
+  the majority — deterministic, so every majority node agrees on the same winner.
+- **No auto-preempt / failback:** a node only elects when NO primary is visible; a
+  recovered higher-priority node sees the live primary via gossip and `follow`s it.
+  Reclaiming is the manual promote.
+- **Override:** a remembered flag (gossiped from the primary) that returns `frozen` from
+  `evaluate_cluster` regardless of primary reachability — freezes elections even when the
+  primary appears lost.
+
+## Tests (47 new, all pass)
+- `test_priority_cluster.py` (15, pure): majority arithmetic; election elects
+  highest-priority survivor + others defer; election grace; **minority must-not-elect**;
+  **majority elects**; **partition never yields two primaries** (explicit 5-node split,
+  asserts ≤1 primary); old-primary-steps-down; **no-auto-preempt**; two-primaries-on-heal
+  lower-number-wins; **override freezes even when primary lost**; roster self-heal in one
+  round + transitive.
+- `test_cluster_endpoints.py` (9): first-node-primary + priority-1; priority uniqueness
+  409 + range; promote refuse-vs-live / allow / **needs-force** / force; override; state.
+- `test_federation_direct.py` (8): the priority-aware bidirectional enroll gate.
+
+## REVIEW BEFORE DEPLOY — the four things a human must eyeball
+1. **The MAJORITY GUARD (`app/cluster.py` `has_majority` + the step_down/no_leader paths).**
+   This is THE split-brain guard. Confirm the strict-majority arithmetic and that the
+   incumbent steps down on majority loss match your fleet size (esp. even-sized fleets,
+   where neither half of a clean split has a majority → leaderless until a partition heals
+   or an operator force-promotes).
+2. **Partition / double-primary test results.** `test_partition_never_yields_two_primaries`
+   asserts ≤1 primary across an explicit 5-node split. Eyeball that the modeled partition
+   matches real failure modes (it tests the decision logic, not live network timing — the
+   10s/30s timing + the gossip loop are integration glue, lightly covered).
+3. **The override path.** A remembered flag that freezes ALL elections, even during
+   apparent primary loss. If gossip never propagated the override before a partition, the
+   two sides may disagree on whether it's set. Verify the operator workflow (set on the
+   primary, confirm it's seen fleet-wide) before relying on it.
+4. **The manual force-promote.** `/api/cluster/promote {force:true}` bypasses the
+   live-primary refusal ONLY for unreachable (unconfirmable) peers — never against a
+   confirmed-live primary — but a human force-promoting during a partition is the residual
+   two-primary risk. Confirm the UI warning + that `current_leader_address`/redirect
+   behave sanely with two primaries mid-heal (the lower priority number wins the conflict).
+
+Also note: the gossip loop + data-sync + redirect are gated by `cluster_enabled=false`,
+so installing this changes nothing until a fleet opts in. Not merged. Not deployed.

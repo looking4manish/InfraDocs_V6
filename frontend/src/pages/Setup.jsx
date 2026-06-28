@@ -12,6 +12,21 @@ const choice = (active) =>
 const btn =
   "rounded-lg px-4 py-2 text-sm font-medium neon-glow border border-[var(--neon)] bg-[var(--neon)]/10 hover:bg-[var(--neon)]/20 disabled:opacity-50 transition-colors";
 
+// One direction of the bidirectional reachability check: pass / fail / pending.
+function Direction({ ok, label }) {
+  const mark = ok === true ? "✓" : ok === false ? "✗" : "…";
+  const tone = ok === true ? "text-emerald-400" : ok === false ? "text-rose-400" : "text-zinc-500";
+  return (
+    <div className="flex items-center gap-2">
+      <span className={`font-mono ${tone}`}>{mark}</span>
+      <span className="text-zinc-300">{label}</span>
+      <span className={`ml-auto text-[11px] ${tone}`}>
+        {ok === true ? "reachable" : ok === false ? "unreachable" : "not tested"}
+      </span>
+    </div>
+  );
+}
+
 function Section({ n, title, children }) {
   return (
     <div className="flex flex-col gap-2">
@@ -28,6 +43,9 @@ export default function Setup({ onDone }) {
   const [role, setRole] = useState("standalone");
   const [primaryUrl, setPrimaryUrl] = useState("");
   const [joinToken, setJoinToken] = useState("");
+  const [advertiseUrl, setAdvertiseUrl] = useState("");
+  const [priority, setPriority] = useState("");
+  const [reach, setReach] = useState(null); // bidirectional enroll result
   const [exposure, setExposure] = useState("domain");
   const [domain, setDomain] = useState("");
   const [token, setToken] = useState("");
@@ -55,6 +73,7 @@ export default function Setup({ onDone }) {
   async function finish() {
     setBusy(true);
     setErr("");
+    setReach(null);
     try {
       await endpoints.completeSetup({
         server_name: name || null,
@@ -63,13 +82,23 @@ export default function Setup({ onDone }) {
         domain: domain || null,
         primary_url: role === "secondary" ? primaryUrl || null : null,
         join_token: role === "secondary" ? joinToken || null : null,
+        advertise_url: role === "secondary" ? advertiseUrl || null : null,
+        priority: role === "secondary" && priority ? Number(priority) : null,
         ai_endpoint: aiEndpoint || null,
         ai_key: aiKey || null,
         ai_model: aiModel || null,
       });
+      if (role === "secondary") setReach({ secondary_to_primary: true, primary_to_secondary: true });
       onDone();
     } catch (e) {
-      setErr(e?.response?.data?.detail || "Could not save setup");
+      const d = e?.response?.data?.detail;
+      // A secondary enroll failure carries the per-direction verdict.
+      if (d && typeof d === "object" && d.directions) {
+        setReach(d.directions);
+        setErr(d.reason || d.message || "Enrollment refused");
+      } else {
+        setErr(typeof d === "string" ? d : "Could not save setup");
+      }
     } finally {
       setBusy(false);
     }
@@ -106,6 +135,24 @@ export default function Setup({ onDone }) {
                 value={primaryUrl} onChange={(e) => setPrimaryUrl(e.target.value)} />
               <input className={field} placeholder="Join token (from the primary)"
                 value={joinToken} onChange={(e) => setJoinToken(e.target.value)} />
+              <input className={field}
+                placeholder="This server's address — how the primary reaches you (e.g. http://100.x.y.z:8090)"
+                value={advertiseUrl} onChange={(e) => setAdvertiseUrl(e.target.value)} />
+              <input className={field} type="number" min="1" max="99"
+                placeholder="Failover priority 1-99 (1 = highest; must be free)"
+                value={priority} onChange={(e) => setPriority(e.target.value)} />
+              <div className="text-[11px] text-zinc-500 -mt-0.5">
+                Lower number = higher priority for becoming primary on failover. The primary
+                rejects a priority already in use. Enrollment also proves reachability{" "}
+                <span className="text-zinc-300">both ways</span> — your call to the primary, and
+                the primary's call back to you.
+              </div>
+              {reach && (
+                <div className="rounded-lg border border-white/10 bg-black/30 p-3 text-sm flex flex-col gap-1.5">
+                  <Direction ok={reach.secondary_to_primary} label="This server → primary" />
+                  <Direction ok={reach.primary_to_secondary} label="Primary → this server" />
+                </div>
+              )}
             </div>
           )}
         </Section>

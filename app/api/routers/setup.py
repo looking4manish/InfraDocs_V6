@@ -12,7 +12,7 @@ import subprocess
 import urllib.request
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app import auth as A
@@ -149,6 +149,8 @@ class CompleteRequest(BaseModel):
     domain: Optional[str] = None
     primary_url: Optional[str] = None    # for secondary
     join_token: Optional[str] = None     # for secondary
+    advertise_url: Optional[str] = None  # this node's own reachable (tailnet) address
+    priority: Optional[int] = None       # 1-99; secondary picks a free one (primary auto = 1)
     # Optional AI labeling — any OpenAI-compatible endpoint (OpenAI / local Ollama / …).
     ai_endpoint: Optional[str] = None
     ai_key: Optional[str] = None
@@ -157,6 +159,42 @@ class CompleteRequest(BaseModel):
 
 @router.post("/complete")
 def complete(req: CompleteRequest, actor: str = Depends(verify_auth), db: DBManager = Depends(get_db)):
+    node_id = _server_id()
+    # The first node (primary/standalone) auto-takes priority 1 and is primary.
+    priority = 1 if req.role in ("primary", "standalone") else req.priority
+
+    if req.role == "secondary":
+        if not (req.primary_url and req.join_token and req.advertise_url and req.priority):
+            raise HTTPException(
+                status_code=400,
+                detail="secondary needs primary_url, join_token, advertise_url, and a priority (1-99)",
+            )
+        from app import federation as F
+        result = F.enroll_with_primary(
+            req.primary_url, req.advertise_url, req.join_token, node_id, req.priority,
+        )
+        if not result.get("ok"):
+            d = result.get("directions", {})
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "enrollment refused",
+                    "directions": d,
+                    "reason": result.get("reason"),
+                },
+            )
+
+    # Persist this node's cluster self-record (its own Mongo — no shared DB).
+    is_primary = req.role in ("primary", "standalone")
+    db.db.cluster.update_one(
+        {"_id": "self"},
+        {"$set": {"node_id": node_id, "priority": priority, "address": req.advertise_url,
+                  "is_primary": is_primary, "override": False}},
+        upsert=True,
+    )
+    if is_primary:
+        db.db.settings.update_one({"_id": "app"}, {"$set": {"primary_node": node_id}}, upsert=True)
+
     patch = {
         "setup_complete": True,
         "server_name": req.server_name,
@@ -165,6 +203,8 @@ def complete(req: CompleteRequest, actor: str = Depends(verify_auth), db: DBMana
         "domain": req.domain,
         "primary_url": req.primary_url,
         "join_token": req.join_token,
+        "advertise_url": req.advertise_url,
+        "priority": priority,
         "completed_by": actor,
     }
     # Only overwrite AI config when provided (so re-running setup doesn't wipe it).
@@ -175,4 +215,9 @@ def complete(req: CompleteRequest, actor: str = Depends(verify_auth), db: DBMana
     if req.ai_model:
         patch["ai_model"] = req.ai_model
     _save_settings(db, patch)
-    return {"ok": True, "setup_complete": True}
+    return {"ok": True, "setup_complete": True, "role": req.role}
+
+
+def _server_id() -> str:
+    from app.core.config_loader import get_config
+    return get_config().server.id

@@ -1,30 +1,26 @@
-"""Federation — a primary aggregates data pushed by secondaries.
+"""Federation — a primary aggregates secondaries' scans over the Tailscale mesh.
 
-Secondaries scan THEMSELVES and push (outbound, so it works behind NAT/CGNAT like
-N150) to the primary's /api/federation/ingest, authenticated by a join token the
-primary minted. The primary stores each server's data scoped by server_id, so its
-dashboard shows every node. (Command dispatch primary->secondary is a later step;
-this delivers the data plane.)
+Every node can reach every other node directly (tailnet), so the old outbound
+command-queue + poll + reap machinery has been removed. What remains here is the
+data plane (a primary ingesting a secondary's scan) + token minting + the server
+list. Enrollment reachability lives below (added with the direct model); leader
+election lives in app/cluster_lease.py.
 """
 
 import secrets
-import uuid
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timezone
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
-from pymongo import ReturnDocument
 
-from app.api.dependencies import get_db, verify_auth
+from app import cluster as CC
+from app import federation as F
+from app.api.dependencies import get_config, get_db, verify_auth
+from app.core.config_loader import Config
 from app.core.db_manager import DBManager
 
 router = APIRouter()
-
-# Mirror app.actions' self-protection without importing it at module load
-# (that module pulls in the docker SDK; the primary has it, but keep the
-# coupling lazy/cheap — the prefix list is the only thing we need here).
-SELF_PROTECT_PREFIXES = ("infradocs-v6-",)
 
 
 class MintRequest(BaseModel):
@@ -104,248 +100,94 @@ def ingest(
 
 
 # ===========================================================================
-# Command dispatch (primary -> secondary) — Model A: queue + outbound poll.
-#
-# A secondary sits behind NAT, so the primary can never reach in. Instead the
-# primary ENQUEUES a command; the secondary PULLS pending commands on its next
-# poll (an outbound request, like the data-plane push), runs each through the
-# SAME guarded actions dispatcher (app.actions.dispatch — so self-protection and
-# the allow-list apply identically), then PUSHES the result back. Every step is
-# recorded in actions_log on the primary so the fleet has one audit trail.
+# Direct (mesh) model: reachability handshake + leader election.
 # ===========================================================================
 
 
-def _is_self_protected(name: str) -> bool:
-    return any((name or "").startswith(p) for p in SELF_PROTECT_PREFIXES)
-
-# How long a claimed-but-unreported command may sit before the reaper closes it.
-# A dispatched command is one guarded action (start/stop/restart/logs); if the
-# secondary hasn't reported in this window it's dead (host down, poll cycle died,
-# network dropped), not slow. Mark it 'expired' and write the closing audit entry
-# — never DELETE, so the actions_log trail stays intact.
-COMMAND_EXPIRY_SECONDS = 15 * 60
+@router.get("/ping")
+def ping(cfg: Config = Depends(get_config), db: DBManager = Depends(get_db)):
+    """Unauthenticated identity — used by the primary's back-connection during the
+    enroll handshake. Returns only non-sensitive identity info."""
+    self_doc = db.db.cluster.find_one({"_id": "self"}) or {}
+    return {"ok": True, "server_id": cfg.server.id,
+            "role": _settings(db).get("role"), "is_primary": bool(self_doc.get("is_primary"))}
 
 
-def reap_stale_commands(db: DBManager) -> int:
-    """Close out commands claimed (status='dispatched') but never reported within
-    COMMAND_EXPIRY_SECONDS. Returns the number reaped. Idempotent; safe to call
-    on every /commands read. Only touches 'dispatched' rows with a dispatched_at —
-    a 'pending' row that's merely old just hasn't been polled yet and is left alone.
-    """
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=COMMAND_EXPIRY_SECONDS)
-    reaped = 0
-    while True:
-        cmd = db.db.federation_commands.find_one_and_update(
-            {"status": "dispatched", "dispatched_at": {"$lt": cutoff}},
-            {"$set": {
-                "status": "expired",
-                "completed_at": datetime.now(timezone.utc),
-                "result": {
-                    "status": "expired",
-                    "stdout": "",
-                    "stderr": "",
-                    "return_code": None,
-                    "duration_ms": 0,
-                    "refused_reason": "no result reported before expiry",
-                },
-            }},
-            return_document=ReturnDocument.AFTER,
-        )
-        if not cmd:
-            break
-        asset = cmd.get("asset", {})
-        db.record_action({
-            "actor": cmd.get("created_by"),
-            "server_id": cmd.get("server_id"),
-            "asset_id": asset.get("asset_id"),
-            "asset_name": asset.get("name"),
-            "category": asset.get("category"),
-            "project": asset.get("project"),
-            "action": cmd.get("action"),
-            "args": cmd.get("args", {}),
-            "status": "expired",
-            "refused_reason": "no result reported before expiry",
-            "command_id": cmd.get("command_id"),
-            "origin": "federation",
-        })
-        reaped += 1
-    return reaped
+def _settings(db: DBManager) -> dict:
+    return db.db.settings.find_one({"_id": "app"}) or {}
 
-class DispatchRequest(BaseModel):
+
+def _known_priorities(db: DBManager) -> dict:
+    """node_id -> priority across this node's roster + its own self record."""
+    out = {}
+    self_doc = db.db.cluster.find_one({"_id": "self"}) or {}
+    if self_doc.get("node_id") and self_doc.get("priority") is not None:
+        out[self_doc["node_id"]] = self_doc["priority"]
+    for n in db.db.cluster_nodes.find({}, {"_id": 0, "node_id": 1, "priority": 1}):
+        if n.get("priority") is not None:
+            out[n["node_id"]] = n["priority"]
+    return out
+
+
+class EnrollRequest(BaseModel):
     server_id: str
-    asset_id: str
-    action: str
-    args: Dict[str, Any] = {}
+    secondary_url: str   # the secondary's own tailnet address, for the back-connection
+    join_token: str
+    priority: int        # 1-99; the primary rejects a priority already taken
 
 
-@router.post("/commands")
-def create_command(
-    req: DispatchRequest,
-    actor: str = Depends(verify_auth),
-    db: DBManager = Depends(get_db),
-):
-    """Primary: enqueue an action for a secondary to execute on its next poll."""
-    if not db.db.federation_servers.find_one({"server_id": req.server_id}):
-        raise HTTPException(status_code=404, detail=f"unknown server: {req.server_id}")
-
-    asset = db.db.assets.find_one({"asset_id": req.asset_id, "server_id": req.server_id})
-    if not asset:
-        raise HTTPException(
-            status_code=404,
-            detail=f"asset '{req.asset_id}' not found on server '{req.server_id}'",
-        )
-
-    name = asset.get("name", "")
-    # Refuse up front (the secondary's dispatcher would refuse too, but failing
-    # fast here gives the operator the 409 immediately and never queues it).
-    if _is_self_protected(name):
-        raise HTTPException(
-            status_code=409,
-            detail=f"refusing to dispatch to protected asset: {name}",
-        )
-
-    # Embed just what the remote dispatcher needs (category/name/metadata).
-    payload_asset = {
-        "category": asset.get("category"),
-        "asset_id": asset.get("asset_id"),
-        "name": asset.get("name"),
-        "project": asset.get("project"),
-        "metadata": asset.get("metadata", {}),
-    }
-    command_id = uuid.uuid4().hex
-    now = datetime.now(timezone.utc)
-    db.db.federation_commands.insert_one({
-        "command_id": command_id,
-        "server_id": req.server_id,
-        "asset": payload_asset,
-        "action": req.action,
-        "args": req.args,
-        "status": "pending",
-        "created_at": now,
-        "created_by": actor,
-    })
-    # Audit the dispatch the moment it's queued (status flips on completion).
-    db.record_action({
-        "actor": actor,
-        "server_id": req.server_id,
-        "asset_id": payload_asset["asset_id"],
-        "asset_name": payload_asset["name"],
-        "category": payload_asset["category"],
-        "project": payload_asset["project"],
-        "action": req.action,
-        "args": req.args,
-        "status": "pending",
-        "command_id": command_id,
-        "origin": "federation",
-    })
-    return {"command_id": command_id, "server_id": req.server_id, "status": "pending"}
-
-
-@router.get("/commands")
-def list_commands(
-    server_id: Optional[str] = None,
-    limit: int = 50,
-    _: str = Depends(verify_auth),
-    db: DBManager = Depends(get_db),
-):
-    """Primary: list recent dispatched commands (drives the Servers-lens panel)."""
-    reap_stale_commands(db)
-    q = {"server_id": server_id} if server_id else {}
-    rows = list(
-        db.db.federation_commands.find(q, {"_id": 0})
-        .sort("created_at", -1)
-        .limit(min(max(limit, 1), 200))
-    )
-    return {"commands": rows, "count": len(rows)}
-
-
-class PendingRequest(BaseModel):
-    server_id: str
-
-
-@router.post("/commands/pending")
-def claim_pending(
-    req: PendingRequest,
-    x_join_token: Optional[str] = Header(None),
-    db: DBManager = Depends(get_db),
-):
-    """Secondary -> primary (outbound): atomically claim this server's pending
-    commands, flipping them to 'dispatched' so a re-poll can't double-run them."""
-    if not _valid_token(db, req.server_id, x_join_token):
+@router.post("/enroll")
+def enroll(req: EnrollRequest, db: DBManager = Depends(get_db)):
+    """Primary-side of enrollment: validate the token, REJECT a duplicate priority,
+    then prove BIDIRECTIONAL reachability (the request proves secondary->primary; we
+    connect BACK to prove primary->secondary). Recorded only if all three pass."""
+    if not _valid_token(db, req.server_id, req.join_token):
         raise HTTPException(status_code=401, detail="invalid or missing join token")
-    now = datetime.now(timezone.utc)
-    claimed = []
-    while True:
-        doc = db.db.federation_commands.find_one_and_update(
-            {"server_id": req.server_id, "status": "pending"},
-            {"$set": {"status": "dispatched", "dispatched_at": now}},
-            sort=[("created_at", 1)],
-            return_document=ReturnDocument.AFTER,
-            projection={"_id": 0},
+    if not (1 <= req.priority <= 99):
+        raise HTTPException(status_code=400, detail="priority must be between 1 and 99")
+    # Priority uniqueness — the primary holds the authoritative roster.
+    known = _known_priorities(db)
+    if CC.priority_in_use(
+        {nid: {"priority": p} for nid, p in known.items()}, req.priority, exclude=req.server_id
+    ):
+        taken_by = next(nid for nid, p in known.items() if p == req.priority and nid != req.server_id)
+        raise HTTPException(status_code=409,
+                            detail=f"priority {req.priority} already in use (by '{taken_by}') — pick a free one")
+
+    secondary_to_primary = True  # this request reached us
+    primary_to_secondary = False
+    reason = None
+    try:
+        pong = F.ping_node(req.secondary_url)
+        if pong.get("server_id") and pong.get("server_id") != req.server_id:
+            reason = (f"reached {req.secondary_url} but it identifies as "
+                      f"'{pong.get('server_id')}', not '{req.server_id}'")
+        else:
+            primary_to_secondary = True
+    except Exception as e:  # noqa: BLE001
+        reason = f"primary could not reach the secondary at {req.secondary_url}: {e}"
+
+    ok = secondary_to_primary and primary_to_secondary
+    if ok:
+        now = datetime.now(timezone.utc)
+        db.db.federation_servers.update_one(
+            {"server_id": req.server_id},
+            {"$set": {"server_id": req.server_id, "url": req.secondary_url, "enrolled_at": now}},
+            upsert=True,
         )
-        if not doc:
-            break
-        claimed.append(doc)
-    return {"commands": claimed, "count": len(claimed)}
-
-
-class ResultRequest(BaseModel):
-    server_id: str
-    status: str  # success | failed | refused
-    stdout: str = ""
-    stderr: str = ""
-    return_code: Optional[int] = None
-    duration_ms: int = 0
-    refused_reason: Optional[str] = None
-
-
-@router.post("/commands/{command_id}/result")
-def report_result(
-    command_id: str,
-    req: ResultRequest,
-    x_join_token: Optional[str] = Header(None),
-    db: DBManager = Depends(get_db),
-):
-    """Secondary -> primary (outbound): report a command's outcome. The primary
-    closes out the command and writes the final, audited actions_log entry."""
-    if not _valid_token(db, req.server_id, x_join_token):
-        raise HTTPException(status_code=401, detail="invalid or missing join token")
-    cmd = db.db.federation_commands.find_one({"command_id": command_id})
-    if not cmd:
-        raise HTTPException(status_code=404, detail="unknown command")
-    if cmd.get("server_id") != req.server_id:
-        # A token is scoped to one server; it can't close another server's command.
-        raise HTTPException(status_code=403, detail="token not scoped to this command")
-
-    result = {
-        "status": req.status,
-        "stdout": (req.stdout or "")[-4000:],
-        "stderr": (req.stderr or "")[-4000:],
-        "return_code": req.return_code,
-        "duration_ms": req.duration_ms,
-        "refused_reason": req.refused_reason,
-    }
-    db.db.federation_commands.update_one(
-        {"command_id": command_id},
-        {"$set": {"status": req.status, "completed_at": datetime.now(timezone.utc), "result": result}},
-    )
-    asset = cmd.get("asset", {})
-    db.record_action({
-        "actor": cmd.get("created_by"),
+        # Add to the authoritative roster with its priority + address.
+        db.db.cluster_nodes.update_one(
+            {"node_id": req.server_id},
+            {"$set": {"node_id": req.server_id, "priority": req.priority,
+                      "address": req.secondary_url, "is_primary": False, "last_seen": now}},
+            upsert=True,
+        )
+    return {
+        "ok": ok,
         "server_id": req.server_id,
-        "asset_id": asset.get("asset_id"),
-        "asset_name": asset.get("name"),
-        "category": asset.get("category"),
-        "project": asset.get("project"),
-        "action": cmd.get("action"),
-        "args": cmd.get("args", {}),
-        "status": req.status,
-        "return_code": req.return_code,
-        "stdout": result["stdout"],
-        "stderr": result["stderr"],
-        "duration_ms": req.duration_ms,
-        "refused_reason": req.refused_reason,
-        "command_id": command_id,
-        "origin": "federation",
-    })
-    return {"ok": True, "command_id": command_id, "status": req.status}
+        "directions": {
+            "secondary_to_primary": secondary_to_primary,
+            "primary_to_secondary": primary_to_secondary,
+        },
+        "reason": reason if not ok else None,
+    }
