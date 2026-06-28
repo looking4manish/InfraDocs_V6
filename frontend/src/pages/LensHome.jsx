@@ -299,108 +299,6 @@ function AddServerPanel({ qc }) {
   );
 }
 
-// Actions a remote secondary can run (subset of the local allow-list that's
-// safe to drive from a free-text asset id — read/lifecycle verbs).
-const REMOTE_ACTIONS = ["restart", "start", "stop", "logs", "status"];
-
-function CmdStatusBadge({ status }) {
-  const tone =
-    {
-      pending: "bg-amber-500/15 text-amber-300",
-      dispatched: "bg-sky-500/15 text-sky-300",
-      success: "bg-emerald-500/15 text-emerald-300",
-      failed: "bg-rose-500/15 text-rose-300",
-      refused: "bg-zinc-700/40 text-zinc-300",
-    }[status] || "bg-zinc-700/40 text-zinc-300";
-  return <span className={cn("text-[10px] px-1.5 py-0.5 rounded-full shrink-0", tone)}>{status}</span>;
-}
-
-// Minimal dispatch affordance: queue an action for a secondary and watch it
-// run. Commands complete asynchronously (the secondary polls), so the list
-// auto-refreshes until results land.
-function RemoteActionsPanel({ serverId }) {
-  const qc = useQueryClient();
-  const [assetId, setAssetId] = useState("");
-  const [action, setAction] = useState("restart");
-  const cmds = useQuery({
-    queryKey: ["fed-commands", serverId],
-    queryFn: () => endpoints.listFederationCommands(serverId).then((r) => r.data),
-    refetchInterval: 4000,
-  });
-  const dispatch = useMutation({
-    mutationFn: () =>
-      endpoints.dispatchFederationCommand(serverId, assetId.trim(), action).then((r) => r.data),
-    onSuccess: () => {
-      setAssetId("");
-      qc.invalidateQueries({ queryKey: ["fed-commands", serverId] });
-    },
-  });
-  const rows = cmds.data?.commands || [];
-  return (
-    <div className="neon-panel rounded-xl p-4 mt-4">
-      <div className="text-[13px] text-zinc-200 mb-1 font-medium">Remote actions · {serverId}</div>
-      <p className="text-[12px] text-zinc-500 mb-3">
-        Queue an action for this secondary. It runs on the secondary's next poll
-        (outbound, NAT-friendly) through the same guarded dispatcher as local actions
-        — <span className="font-mono text-zinc-400">infradocs-v6-*</span> units are refused — then
-        reports back, fully audited.
-      </p>
-      <div className="flex gap-2 items-center flex-wrap mb-3">
-        <input
-          value={assetId}
-          onChange={(e) => setAssetId(e.target.value)}
-          placeholder="asset id (from the Assets table)"
-          className="bg-bg-elev border border-bg-hover rounded-lg px-3 py-1.5 text-[13px] text-zinc-200 font-mono focus:outline-none focus:border-accent/40 flex-1 min-w-[220px]"
-        />
-        <select
-          value={action}
-          onChange={(e) => setAction(e.target.value)}
-          className="bg-bg-elev border border-bg-hover rounded-lg px-3 py-1.5 text-[13px] text-zinc-200"
-        >
-          {REMOTE_ACTIONS.map((a) => (
-            <option key={a} value={a}>{a}</option>
-          ))}
-        </select>
-        <button
-          onClick={() => dispatch.mutate()}
-          disabled={!assetId.trim() || dispatch.isPending}
-          className="text-[12px] px-3 py-1.5 rounded-lg disabled:opacity-50 neon-glow border border-[var(--neon)] bg-[var(--neon)]/10 hover:bg-[var(--neon)]/20"
-        >
-          {dispatch.isPending ? "Dispatching…" : "Dispatch"}
-        </button>
-      </div>
-      {dispatch.isError && (
-        <div className="text-[12px] text-rose-300 mb-2">
-          {dispatch.error?.response?.data?.detail || "dispatch failed"}
-        </div>
-      )}
-      <div className="space-y-1.5">
-        {rows.length === 0 && <div className="text-[12px] text-zinc-500">No commands dispatched yet.</div>}
-        {rows.map((c) => (
-          <div key={c.command_id} className="bg-black/30 border border-bg-hover rounded-lg px-3 py-2 text-[12px]">
-            <div className="flex items-center gap-2">
-              <span className="font-mono text-zinc-200">{c.action}</span>
-              <span className="text-zinc-500 font-mono truncate">{c.asset?.name || c.asset?.asset_id}</span>
-              <CmdStatusBadge status={c.status} />
-              <span className="ml-auto text-zinc-600 font-mono text-[10.5px]">{relTime(c.created_at)}</span>
-            </div>
-            {c.result?.stdout && (
-              <pre className="text-[11px] text-zinc-400 mt-1 whitespace-pre-wrap break-all max-h-24 overflow-auto">
-                {c.result.stdout.slice(0, 600)}
-              </pre>
-            )}
-            {c.result?.stderr && (
-              <pre className="text-[11px] text-rose-300/80 mt-1 whitespace-pre-wrap break-all max-h-24 overflow-auto">
-                {c.result.stderr.slice(0, 600)}
-              </pre>
-            )}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function ServersLens({ apps, reduce, selected, setSelected }) {
   const qc = useQueryClient();
   const health = useQuery({
@@ -499,10 +397,6 @@ function ServersLens({ apps, reduce, selected, setSelected }) {
           <ServerCard key={s.id} s={s} reduce={reduce} onOpen={() => setSelected(s.id)} />
         ))}
       </motion.div>
-
-      {selected && servers.find((s) => s.id === selected)?.role === "secondary" && (
-        <RemoteActionsPanel serverId={selected} />
-      )}
 
       {!loading && servers.length === 0 && (
         <div className="text-sm text-zinc-500">
