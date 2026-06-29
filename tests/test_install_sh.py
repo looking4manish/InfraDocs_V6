@@ -1,22 +1,27 @@
-"""install.sh — onboarding fork + failure-class behaviour (end-to-end, stubbed binaries).
+"""install.sh — onboarding fork, failure-class behaviour, and the address pick-list
+(end-to-end, stubbed binaries).
 
 The terminal installer shares one bring-up, then forks at onboarding (UI wizard vs CLI:
 primary / secondary / standalone). These tests drive the WHOLE script against stub
-git/docker/curl/python/sleep on PATH — no network, no Docker, no real repo touched — and
-assert the behaviour the live UAT exposed:
+git/docker/curl/python/sleep + tailscale/ip/hostname on PATH — no network, no Docker, no
+real repo touched — and assert the behaviour successive UAT runs exposed:
 
   * UI path stands the stack up + emits the wizard URL, no CLI prompts.
-  * STANDALONE skips the reachable-address requirement, the peer/token prompts, and the
-    reachability checks, and still configures the node.
-  * An empty reachable address in primary/secondary mode RE-PROMPTS (it does not abort).
-  * Quitting onboarding after a healthy bring-up leaves the stack UP (no teardown) and
-    prints how to finish later.
-  * A BRING-UP failure (stack never healthy) still tears the half-built stack down.
+  * STANDALONE skips the reachable-address step, the peer prompts, AND the address
+    auto-detection entirely.
+  * primary/secondary offer an auto-detected NUMBERED address pick-list (tailscale / LAN /
+    localhost / manual), defaulting to the first peer-reachable candidate (tailscale here),
+    never localhost; picking a number selects it; manual still accepts a typed value; an
+    invalid choice re-prompts; no detected candidates falls back to the manual prompt; and
+    --advertise-url / env bypasses the picker.
+  * Quitting onboarding after a healthy bring-up leaves the stack UP (no teardown) +
+    prints how to finish later; a BRING-UP failure still tears the half-built stack down.
 
-The pure config/validation logic is unit-tested in test_cli_install.py; the stub for the
-`complete` / `check-*` subcommands here just lets us exercise install.sh's control flow.
+The pure detection/validation logic is unit-tested in test_cli_install.py; the stubs here
+just let us exercise install.sh's control flow.
 """
 
+import json
 import os
 import shutil
 import stat
@@ -29,6 +34,14 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = ROOT / "install.sh"
 
+# Default detected interfaces for the stub `ip -j -4 addr`: loopback + a LAN nic + the
+# tailscale nic (same IP the tailscale CLI reports, to prove de-duplication).
+_DEFAULT_IP_JSON = json.dumps([
+    {"ifname": "lo", "addr_info": [{"family": "inet", "local": "127.0.0.1"}]},
+    {"ifname": "eth0", "addr_info": [{"family": "inet", "local": "10.0.0.12"}]},
+    {"ifname": "tailscale0", "addr_info": [{"family": "inet", "local": "100.70.18.9"}]},
+])
+
 
 def _write_exe(path: Path, body: str) -> None:
     path.write_text(body)
@@ -39,10 +52,11 @@ def _write_exe(path: Path, body: str) -> None:
 def sandbox(tmp_path):
     """A self-contained checkout + a PATH of stub binaries that record their calls.
 
-    The python3 stub records argv then short-circuits the API-driven subcommands
-    (`complete` -> OK, `check-*` -> rc from STUB_CHECK_*_RC) so no real API is needed;
-    `render-env` still runs for real to write the .env. `sleep` is a no-op so the health
-    wait-loops run instantly. `curl` health probes return STUB_HTTP_CODE (default 200).
+    python3 records argv then short-circuits the API-driven subcommands (`complete` -> OK,
+    `check-*` -> rc from STUB_CHECK_*_RC) while letting `render-env`/`detect-addresses` run
+    for real. `sleep` is a no-op (instant health loops). `curl` health probes return
+    STUB_HTTP_CODE (default 200). `tailscale`/`ip`/`hostname` feed address detection from
+    STUB_TAILSCALE_IP / STUB_IP_JSON / STUB_HOSTNAME_I (overridable per-test).
     """
     if not shutil.which("bash"):
         pytest.skip("bash not available")
@@ -72,6 +86,27 @@ def sandbox(tmp_path):
         'for a in "$@"; do case "$a" in *http_code*) echo "${STUB_HTTP_CODE:-200}"; exit 0;; esac; done\n'
         "echo 203.0.113.9\nexit 0\n",
     )
+    # Address-detection stubs.
+    _write_exe(
+        bindir / "tailscale",
+        "#!/usr/bin/env bash\n"
+        'if [[ "${1:-}" == "ip" ]]; then\n'
+        '  [[ -n "${STUB_TAILSCALE_IP:-}" ]] && { echo "$STUB_TAILSCALE_IP"; exit 0; }\n'
+        "  exit 1\n"
+        "fi\nexit 0\n",
+    )
+    _write_exe(
+        bindir / "ip",
+        '#!/usr/bin/env bash\nprintf "%s" "${STUB_IP_JSON:-}"\nexit 0\n',
+    )
+    _write_exe(
+        bindir / "hostname",
+        "#!/usr/bin/env bash\n"
+        'case "${1:-}" in\n'
+        '  -I) echo "${STUB_HOSTNAME_I:-}" ;;\n'
+        '  *)  echo "${STUB_HOSTNAME:-ci-node}" ;;\n'
+        "esac\n",
+    )
     _write_exe(
         bindir / "python3",
         "#!/usr/bin/env bash\n"
@@ -90,6 +125,11 @@ def sandbox(tmp_path):
     env["HOME"] = str(tmp_path)
     env["INFRADOCS_DIR"] = str(deploy_dir)
     env["INFRADOCS_SERVER_ID"] = "ci-node"  # deterministic; avoids the node-id prompt
+    env["INFRADOCS_ADVERTISE_URL"] = ""      # don't let a real env leak the picker bypass
+    # Detection defaults: a tailscale addr + a LAN addr.
+    env["STUB_TAILSCALE_IP"] = "100.70.18.9"
+    env["STUB_IP_JSON"] = _DEFAULT_IP_JSON
+    env["STUB_HOSTNAME_I"] = "10.0.0.12"
     return {"env": env, "deploy_dir": deploy_dir, "calls": calls}
 
 
@@ -140,11 +180,11 @@ def test_ui_path_brings_stack_up_and_emits_url_without_cli_prompts(sandbox):
     assert "check-primary" not in calls and "check-priority" not in calls
 
 
-# ----------------------- FIX 1: standalone ----------------------------------
+# ----------------------- standalone (skips address + detection) -------------
 
 
-def test_standalone_skips_address_and_reachability_and_completes(sandbox):
-    # No stdin at all: standalone needs no reachable address, no peers, no checks.
+def test_standalone_skips_address_detection_and_completes(sandbox):
+    # No stdin: standalone needs no address, no peers, no checks, no detection.
     r = _run(sandbox, "--onboard=cli", "--role=standalone")
     out = r.stdout + r.stderr
     assert r.returncode == 0, f"standalone install failed:\n{out}"
@@ -153,34 +193,97 @@ def test_standalone_skips_address_and_reachability_and_completes(sandbox):
     _stack_up(out)
     assert "standalone node configured" in out and "no cluster" in out
     assert "standalone node ready" in out
-    # It enrolled as standalone...
     assert "complete" in calls and "standalone" in calls
-    # ...without ANY reachability/priority checks or a required-input prompt.
     assert "check-primary" not in calls and "check-priority" not in calls
-    assert "or 'q' to finish later" not in out, "standalone must not prompt for onboarding input"
+    assert "detect-addresses" not in calls, "standalone must not run address detection"
+    assert "pick how other nodes" not in out, "standalone must not show the address picker"
     _no_teardown(sandbox)
 
 
-# ----------------------- FIX 2: recoverable onboarding errors ---------------
+# ----------------------- address pick-list (primary/secondary) --------------
 
 
-def test_empty_address_reprompts_instead_of_aborting(sandbox):
-    # primary mode: first answer is an empty line, then a real address.
-    r = _run(sandbox, "--onboard=cli", "--role=primary",
-             stdin_text="\nhttp://node-a:8081\n")
+def test_picker_lists_candidates_and_defaults_to_tailscale(sandbox):
+    # Empty line at the menu = accept the default ([1]).
+    r = _run(sandbox, "--onboard=cli", "--role=primary", stdin_text="\n")
     out = r.stdout + r.stderr
-    assert r.returncode == 0, f"expected re-prompt + success, got:\n{out}"
-    calls = _calls(sandbox)
+    assert r.returncode == 0, f"picker default failed:\n{out}"
 
     _stack_up(out)
-    assert "this can't be empty" in out, "an empty address must RE-PROMPT"
-    assert "node configured + joined" in out
-    assert "complete" in calls
-    _no_teardown(sandbox)  # the fat-fingered prompt cost a re-ask, never a rebuild
+    assert "detect-addresses" in _calls(sandbox)
+    # The full menu, with labels + the always-present escape options.
+    assert "pick how other nodes + browsers reach this box" in out
+    assert "http://100.70.18.9:8081" in out and "tailscale" in out
+    assert "http://10.0.0.12:8081" in out and "lan / eth0" in out
+    assert "http://localhost:8081" in out and "this machine only" in out
+    assert "enter manually" in out
+    # Default = the first (peer-reachable) candidate, i.e. tailscale — NOT localhost.
+    assert "address:   http://100.70.18.9:8081" in out
+    assert "complete" in _calls(sandbox)
+    _no_teardown(sandbox)
+
+
+def test_picker_pick_number_selects_that_address(sandbox):
+    # "2" = the LAN candidate.
+    r = _run(sandbox, "--onboard=cli", "--role=primary", stdin_text="2\n")
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out
+    assert "address:   http://10.0.0.12:8081" in out
+    _no_teardown(sandbox)
+
+
+def test_picker_manual_option_accepts_typed_value(sandbox):
+    # Menu is 1) tailscale 2) lan 3) localhost 4) enter manually -> choose 4, then type.
+    r = _run(sandbox, "--onboard=cli", "--role=primary",
+             stdin_text="4\nhttp://typed-host:8081\n")
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out
+    assert "address:   http://typed-host:8081" in out
+    _no_teardown(sandbox)
+
+
+def test_picker_invalid_choice_reprompts(sandbox):
+    # "9" is out of range -> re-prompt; then "1" selects tailscale.
+    r = _run(sandbox, "--onboard=cli", "--role=primary", stdin_text="9\n1\n")
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out
+    assert "enter a number 1-4" in out, "an invalid menu choice must re-prompt"
+    assert "address:   http://100.70.18.9:8081" in out
+    _no_teardown(sandbox)
+
+
+def test_no_candidates_falls_back_to_manual_prompt(sandbox):
+    # Detection finds nothing -> free-text prompt (which still re-prompts on empty).
+    env = {"STUB_TAILSCALE_IP": "", "STUB_IP_JSON": "", "STUB_HOSTNAME_I": ""}
+    r = _run(sandbox, "--onboard=cli", "--role=primary",
+             stdin_text="\nhttp://manual-fallback:8081\n", extra_env=env)
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out
+    assert "detect-addresses" in _calls(sandbox)        # detection ran...
+    assert "pick how other nodes" not in out             # ...but produced no menu
+    assert "this can't be empty" in out                  # manual prompt re-prompts on empty
+    assert "address:   http://manual-fallback:8081" in out
+    _no_teardown(sandbox)
+
+
+def test_advertise_url_override_bypasses_picker(sandbox):
+    # Scripted: --advertise-url skips detection AND the menu entirely.
+    r = _run(sandbox, "--onboard=cli", "--role=primary",
+             "--advertise-url=http://scripted-host:8081")
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out
+    assert "detect-addresses" not in _calls(sandbox), "an override must not run detection"
+    assert "pick how other nodes" not in out
+    assert "address:   http://scripted-host:8081" in out
+    assert "complete" in _calls(sandbox)
+    _no_teardown(sandbox)
+
+
+# ----------------------- recoverable onboarding / failure classes -----------
 
 
 def test_quit_after_healthy_bringup_leaves_stack_up_with_resume_instructions(sandbox):
-    # Operator types 'q' at the reachable-address prompt to bail out.
+    # 'q' at the address picker bails out.
     r = _run(sandbox, "--onboard=cli", "--role=primary", stdin_text="q\n")
     out = r.stdout + r.stderr
     assert r.returncode == 0, f"quitting onboarding should exit cleanly, got:\n{out}"
@@ -189,16 +292,14 @@ def test_quit_after_healthy_bringup_leaves_stack_up_with_resume_instructions(san
     _stack_up(out)
     assert "finish onboarding later" in out.lower()
     assert "the stack is UP" in out
-    # Resume instructions for BOTH paths.
     assert "install.sh --onboard=cli" in out
     assert "setup wizard" in out and "http://localhost:8081" in out
-    # Bailing did not enroll and did not tear the stack down.
     assert "complete" not in calls
     _no_teardown(sandbox)
 
 
 def test_bringup_failure_still_tears_down_half_built_stack(sandbox):
-    # Stack never reports healthy -> this is a BRING-UP failure, teardown is correct.
+    # Stack never reports healthy -> BRING-UP failure, teardown is correct.
     r = _run(sandbox, "--onboard=cli", "--role=standalone",
              extra_env={"STUB_HTTP_CODE": "000"})
     out = r.stdout + r.stderr

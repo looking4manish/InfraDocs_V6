@@ -13,6 +13,7 @@ the ADDRESS the operator supplies; that address is what gets stored + redirected
 
 import argparse
 import base64
+import ipaddress
 import json
 import os
 import subprocess
@@ -97,6 +98,106 @@ def primary_reachable(primary_url: str, getter=_get) -> bool:
         return False
 
 
+# ----------------------- reachable-address detection ------------------------
+# Best-effort, mesh-agnostic candidates so the installer can offer a pick-list instead
+# of a blank "type your address from memory" prompt. Tailscale is used ONLY if present;
+# nothing here hard-depends on it. All command output is read through an injectable
+# runner so this is unit-testable without a network.
+
+
+def _cmd_out(runner, cmd, timeout: int = 5) -> str:
+    try:
+        r = runner(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except Exception:  # noqa: BLE001 — missing binary / timeout / anything → no data
+        return ""
+    if getattr(r, "returncode", 1) != 0:
+        return ""
+    return r.stdout or ""
+
+
+def _tailscale_ipv4(runner) -> list:
+    ips = []
+    for line in _cmd_out(runner, ["tailscale", "ip", "-4"]).splitlines():
+        s = line.strip()
+        try:
+            ipaddress.ip_address(s)
+        except ValueError:
+            continue
+        ips.append(s)
+    return ips
+
+
+def _interface_ipv4(runner) -> list:
+    """[(ip, iface)] for IPv4 addrs. Prefer `ip -j -4 addr`; fall back to `hostname -I`."""
+    pairs = []
+    out = _cmd_out(runner, ["ip", "-j", "-4", "addr"])
+    if out:
+        try:
+            data = json.loads(out)
+        except Exception:  # noqa: BLE001
+            data = []
+        for link in data:
+            iface = link.get("ifname", "")
+            for a in link.get("addr_info", []):
+                if a.get("family") == "inet" and a.get("local"):
+                    pairs.append((a["local"], iface))
+    if not pairs:
+        for tok in _cmd_out(runner, ["hostname", "-I"]).split():
+            try:
+                ipaddress.ip_address(tok)
+            except ValueError:
+                continue
+            pairs.append((tok, ""))
+    return pairs
+
+
+def _in_cgnat(ip: str) -> bool:
+    try:
+        return ipaddress.ip_address(ip) in ipaddress.ip_network("100.64.0.0/10")
+    except ValueError:
+        return False
+
+
+def _is_loopback(ip: str) -> bool:
+    try:
+        return ipaddress.ip_address(ip).is_loopback
+    except ValueError:
+        return False
+
+
+def detect_addresses(web_port, runner=subprocess.run) -> list:
+    """Peer-reachable candidate addresses for THIS node, ordered best-first (tailscale,
+    then LAN). Loopback is excluded and localhost is NOT included here — install.sh adds
+    the explicit 'this machine only' + 'enter manually' options to the menu. The CGNAT
+    range 100.64.0.0/10 (Tailscale's range) is labelled tailscale even when it shows up
+    as a plain interface. Returns [{'url','label','kind'}]; empty if nothing is found."""
+    try:
+        port = int(web_port)
+    except (TypeError, ValueError):
+        port = 8081
+    out, seen = [], set()
+
+    def add(ip, label, kind):
+        url = f"http://{ip}:{port}"
+        if url in seen:
+            return
+        seen.add(url)
+        out.append({"url": url, "label": label, "kind": kind})
+
+    for ip in _tailscale_ipv4(runner):
+        add(ip, "tailscale", "tailscale")
+    for ip, iface in _interface_ipv4(runner):
+        if _is_loopback(ip):
+            continue
+        if _in_cgnat(ip):
+            add(ip, "tailscale", "tailscale")
+        else:
+            add(ip, f"lan / {iface}" if iface else "lan", "lan")
+    rank = {"tailscale": 0, "lan": 1}
+    out.sort(key=lambda c: rank.get(c["kind"], 9))  # stable: insertion order kept within a kind
+    return out
+
+
 # ----------------------- config rendering -----------------------------------
 
 
@@ -173,6 +274,7 @@ def _cli(argv=None) -> int:
     ck = sub.add_parser("check-priority")
     ck.add_argument("--primary-url", required=True); ck.add_argument("--priority", required=True)
     re = sub.add_parser("render-env"); re.add_argument("--out", default="-")
+    da = sub.add_parser("detect-addresses"); da.add_argument("--web-port", default="8081")
     co = sub.add_parser("complete")
     co.add_argument("--api", required=True); co.add_argument("--user", default="admin")
     co.add_argument("--password", default="Changeme001")
@@ -204,6 +306,11 @@ def _cli(argv=None) -> int:
         else:
             with open(args.out, "w") as f:
                 f.write(text)
+        return 0
+    if args.cmd == "detect-addresses":
+        # One candidate per line: url<TAB>label<TAB>kind. install.sh renders the menu.
+        for c in detect_addresses(args.web_port):
+            print(f"{c['url']}\t{c['label']}\t{c['kind']}")
         return 0
     if args.cmd == "complete":
         cfg = {"role": args.role, "server_name": args.server_name, "advertise_url": args.advertise_url}

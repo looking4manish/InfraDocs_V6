@@ -3,8 +3,10 @@ rejection (driving /api/cluster/health), reachability-fail refusal (driving
 /api/setup/complete), config rendering, and the non-interactive deploy invocation.
 All HTTP/subprocess is injected, so these run without a network or Docker."""
 
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -61,6 +63,64 @@ def test_check_priority_primary_unreachable():
 def test_primary_reachable():
     assert I.primary_reachable("http://p", getter=lambda u, timeout=8: {"status": "ok"}) is True
     assert I.primary_reachable("http://p", getter=lambda u, timeout=8: (_ for _ in ()).throw(OSError())) is False
+
+
+# ----------------------- reachable-address detection ------------------------
+
+
+def _runner(mapping):
+    """Fake subprocess.run dispatching on the joined command prefix -> (returncode, stdout).
+    Unmatched commands return rc=1/empty (i.e. the binary 'isn't there')."""
+    def run(cmd, capture_output=True, text=True, timeout=5, check=False):
+        key = " ".join(cmd)
+        for prefix, (rc, out) in mapping.items():
+            if key.startswith(prefix):
+                return SimpleNamespace(returncode=rc, stdout=out)
+        return SimpleNamespace(returncode=1, stdout="")
+    return run
+
+
+def _ipjson(*pairs):
+    return json.dumps([
+        {"ifname": iface, "addr_info": [{"family": "inet", "local": ip}]}
+        for iface, ip in pairs
+    ])
+
+
+def test_detect_addresses_orders_tailscale_first_then_lan_and_dedupes():
+    runner = _runner({
+        "tailscale ip -4": (0, "100.70.18.9\n"),
+        "ip -j -4 addr": (0, _ipjson(("lo", "127.0.0.1"), ("eth0", "10.0.0.12"),
+                                     ("tailscale0", "100.70.18.9"))),
+    })
+    cands = I.detect_addresses(8081, runner=runner)
+    assert [c["kind"] for c in cands] == ["tailscale", "lan"]   # ordered, deduped
+    assert cands[0]["url"] == "http://100.70.18.9:8081"
+    assert cands[1]["url"] == "http://10.0.0.12:8081" and "eth0" in cands[1]["label"]
+    # loopback dropped; localhost is NOT a detection candidate (install.sh adds it)
+    assert all("127.0.0.1" not in c["url"] and "localhost" not in c["url"] for c in cands)
+
+
+def test_detect_addresses_respects_web_port():
+    runner = _runner({"ip -j -4 addr": (0, _ipjson(("eth0", "10.0.0.5")))})
+    assert I.detect_addresses(9000, runner=runner)[0]["url"] == "http://10.0.0.5:9000"
+
+
+def test_detect_addresses_cgnat_interface_labelled_tailscale():
+    # No tailscale CLI, but a 100.64/10 interface address is still tailscale-kind.
+    runner = _runner({"ip -j -4 addr": (0, _ipjson(("ts0", "100.100.1.1")))})
+    assert I.detect_addresses(8081, runner=runner)[0]["kind"] == "tailscale"
+
+
+def test_detect_addresses_hostname_fallback_when_ip_unavailable():
+    runner = _runner({"hostname -I": (0, "10.0.0.99 127.0.0.1\n")})  # tailscale + ip fail
+    cands = I.detect_addresses(8081, runner=runner)
+    assert [c["url"] for c in cands] == ["http://10.0.0.99:8081"]   # loopback dropped
+    assert cands[0]["kind"] == "lan"
+
+
+def test_detect_addresses_empty_when_nothing_found():
+    assert I.detect_addresses(8081, runner=_runner({})) == []
 
 
 # ----------------------- config rendering -----------------------------------

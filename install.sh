@@ -11,9 +11,11 @@
 #             stack (API + Mongo + web), wait until it's healthy.
 #   onboard — you choose HOW to finish:
 #     • CLI: answer the prompts here. Pick a role — [P]rimary / [S]econdary / stand[A]lone:
-#       - primary/secondary federate, so they need this node's reachable address (and a
-#         secondary also needs the primary's address + a join token). It runs the SAME
-#         priority-uniqueness + bidirectional reachability checks the browser wizard does.
+#       - primary/secondary federate, so they need this node's reachable address (offered
+#         as an auto-detected numbered pick-list — tailscale / LAN / localhost / manual —
+#         so you don't type it from memory) and a secondary also needs the primary's
+#         address + a join token. It runs the SAME priority-uniqueness + bidirectional
+#         reachability checks the browser wizard does.
 #       - standalone is a single box with NO cluster: no address, no peers, no checks.
 #     • UI:  no terminal prompts — it prints the URL you open to finish setup in the
 #       browser wizard, and exits leaving the node running-but-unconfigured. The wizard
@@ -41,12 +43,16 @@ BRANCH="${INFRADOCS_BRANCH:-main}"
 # CLI path: primary | secondary | standalone | "" (ask). Flags win over env.
 ONBOARD="${INFRADOCS_ONBOARD:-}"
 ROLE_OVERRIDE="${INFRADOCS_ROLE:-}"
+# Scripted reachable address: --advertise-url / INFRADOCS_ADVERTISE_URL bypasses the picker.
+ADVERTISE_OVERRIDE="${INFRADOCS_ADVERTISE_URL:-}"
 for arg in "$@"; do
   case "$arg" in
-    --onboard=*) ONBOARD="${arg#*=}" ;;
-    --onboard)   echo "use --onboard=cli or --onboard=ui" >&2; exit 1 ;;
-    --role=*)    ROLE_OVERRIDE="${arg#*=}" ;;
-    --role)      echo "use --role=primary|secondary|standalone" >&2; exit 1 ;;
+    --onboard=*)       ONBOARD="${arg#*=}" ;;
+    --onboard)         echo "use --onboard=cli or --onboard=ui" >&2; exit 1 ;;
+    --role=*)          ROLE_OVERRIDE="${arg#*=}" ;;
+    --role)            echo "use --role=primary|secondary|standalone" >&2; exit 1 ;;
+    --advertise-url=*) ADVERTISE_OVERRIDE="${arg#*=}" ;;
+    --advertise-url)   echo "use --advertise-url=http://HOST-OR-IP:PORT" >&2; exit 1 ;;
   esac
 done
 
@@ -72,6 +78,58 @@ ask_required() {
       "")  err "this can't be empty — re-enter, or 'q' to finish onboarding later" ;;
       *)   printf '%s' "$v"; return 0 ;;
     esac
+  done
+}
+
+# pick_advertise_url — choose THIS node's reachable address for primary/secondary onboarding.
+# Auto-detects candidates (tailscale / LAN) and shows a numbered pick-list with an explicit
+# localhost ("this machine only") option and a manual escape hatch; default is the first
+# (best peer-reachable) candidate, never localhost. Echoes the chosen URL to stdout; the
+# menu/prompts go to stderr so $(...) capture stays clean. Returns 1 on 'q' / EOF (the
+# caller leaves the healthy stack up). A scripted override and the no-candidates fallback
+# both route to the same field as the old free-text prompt.
+pick_advertise_url() {
+  if [[ -n "$ADVERTISE_OVERRIDE" ]]; then printf '%s' "$ADVERTISE_OVERRIDE"; return 0; fi
+
+  local urls=() labels=() line url label kind
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    IFS=$'\t' read -r url label kind <<<"$line"
+    urls+=("$url"); labels+=("$label")
+  done < <("${HELP[@]}" detect-addresses --web-port "$WEB_PORT" 2>/dev/null || true)
+
+  # Nothing peer-usable detected → fall back to the manual free-text prompt (old behaviour).
+  if (( ${#urls[@]} == 0 )); then
+    ask_required "This node's reachable address — what other nodes + browsers use (e.g. http://HOST-OR-IP:${WEB_PORT})"
+    return $?
+  fi
+
+  local n_det=${#urls[@]} localhost_num=$(( ${#urls[@]} + 1 )) manual_num=$(( ${#urls[@]} + 2 )) i choice
+  while :; do
+    {
+      echo "This node's reachable address — pick how other nodes + browsers reach this box:"
+      for i in "${!urls[@]}"; do
+        printf "    %d) %-26s (%s)\n" "$(( i + 1 ))" "${urls[$i]}" "${labels[$i]}"
+      done
+      printf "    %d) %-26s (%s)\n" "$localhost_num" "http://localhost:${WEB_PORT}" "this machine only"
+      printf "    %d) enter manually\n" "$manual_num"
+    } >&2
+    if ! read -rp "  Choose [1] (or 'q' to finish later): " choice; then return 1; fi
+    choice="${choice:-1}"
+    case "$choice" in
+      q|Q)        return 1 ;;
+      *[!0-9]*|"") err "enter a number 1-${manual_num}, or 'q' to finish later"; continue ;;
+    esac
+    if (( choice >= 1 && choice <= n_det )); then
+      printf '%s' "${urls[$(( choice - 1 ))]}"; return 0
+    elif (( choice == localhost_num )); then
+      printf '%s' "http://localhost:${WEB_PORT}"; return 0
+    elif (( choice == manual_num )); then
+      ask_required "Enter this node's reachable address (e.g. http://HOST-OR-IP:${WEB_PORT})"
+      return $?
+    else
+      err "enter a number 1-${manual_num}, or 'q' to finish later"
+    fi
   done
 }
 
@@ -240,7 +298,7 @@ if [[ "$ONBOARD" == "cli" ]]; then
     # primary / secondary — a clustered node genuinely needs a reachable address. Every
     # field below RE-PROMPTS on bad input; 'q'/EOF leaves the healthy stack up (onboard_quit).
     PRIORITY=1   # primary; a secondary picks its own below
-    ADVERTISE_URL="$(ask_required "This node's reachable address — what other nodes + browsers use (e.g. http://HOST-OR-IP:${WEB_PORT})")" || onboard_quit
+    ADVERTISE_URL="$(pick_advertise_url)" || onboard_quit
 
     if [[ "$ROLE" == "secondary" ]]; then
       PRIORITY=""
@@ -279,7 +337,7 @@ if [[ "$ONBOARD" == "cli" ]]; then
       fi
       # Recoverable: the stack stays up. Fix the inputs and retry, or finish later.
       askyn "Re-enter onboarding details and retry? (n = leave the stack up, finish later)" || onboard_quit
-      ADVERTISE_URL="$(ask_required "This node's reachable address (e.g. http://HOST-OR-IP:${WEB_PORT})")" || onboard_quit
+      ADVERTISE_URL="$(pick_advertise_url)" || onboard_quit
       if [[ "$ROLE" == "secondary" ]]; then
         while :; do
           PRIORITY="$(ask_required "Failover priority 1-99 (1 = highest; must be free)")" || onboard_quit
