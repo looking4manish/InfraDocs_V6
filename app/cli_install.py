@@ -177,7 +177,9 @@ def _cli(argv=None) -> int:
     co.add_argument("--api", required=True); co.add_argument("--user", default="admin")
     co.add_argument("--password", default="Changeme001")
     co.add_argument("--role", required=True); co.add_argument("--server-name")
-    co.add_argument("--advertise-url", required=True)
+    # advertise-url is required for primary/secondary (a clustered node needs a reachable
+    # address) but NOT for standalone, which runs on one box with no federation.
+    co.add_argument("--advertise-url")
     co.add_argument("--priority"); co.add_argument("--primary-url"); co.add_argument("--join-token")
 
     args = ap.parse_args(argv)

@@ -94,6 +94,32 @@ def test_build_complete_body_secondary_carries_enroll_fields():
     assert b["priority"] == 7 and b["primary_url"] == "http://p" and b["join_token"] == "tok"
 
 
+def test_build_complete_body_standalone_needs_no_address_or_peers():
+    # A single-node install: priority auto-1, no advertise_url, no peer/token fields.
+    b = I.build_complete_body({"role": "standalone", "server_name": "solo"})
+    assert b["role"] == "standalone" and b["priority"] == 1
+    assert b.get("advertise_url") is None
+    assert "primary_url" not in b and "join_token" not in b
+
+
+def test_cli_complete_standalone_accepts_no_advertise_url(monkeypatch):
+    # --advertise-url is no longer required, so a standalone `complete` parses + runs.
+    captured = {}
+
+    def fake_complete(api_base, body, auth, poster=None):
+        captured["body"] = body
+        return True, None, None
+
+    monkeypatch.setattr(I, "complete_setup", fake_complete)
+    rc = I._cli(["complete", "--api", "http://local", "--role", "standalone",
+                 "--server-name", "solo"])
+    assert rc == 0
+    assert captured["body"]["role"] == "standalone"
+    assert captured["body"]["priority"] == 1
+    assert captured["body"].get("advertise_url") is None
+    assert "primary_url" not in captured["body"]
+
+
 # ----------------------- enroll / setup completion --------------------------
 
 
