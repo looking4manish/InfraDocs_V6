@@ -338,3 +338,77 @@ and `/federation/promote` + the lease config. (The queue/poll/reap was already g
 
 Also note: the gossip loop + data-sync + redirect are gated by `cluster_enabled=false`,
 so installing this changes nothing until a fleet opts in. Not merged. Not deployed.
+
+---
+
+# ═══ TERMINAL INSTALLER + MERGE TO MAIN (2026-06-28) ═══
+
+Two jobs. **Job 1 landed on `main`; Job 2 (the installer) is on a BRANCH, not main.**
+
+## Job 1 — merge to main (DONE, pushed)
+Merged `feature/priority-failover-cluster` (no-ff) into `main` → `origin/main` at
+**`2826170`**, now containing direct-mesh federation + bidirectional reachability enroll +
+the priority gossip cluster. Done in a worktree (live deploy dir untouched). Suite on
+merged main: **233 passed, 1 failed** (only the known `test_integration_correlate_real_oci_scan`
+openwebui drift).
+
+## Job 2 — interactive terminal installer (on branch `feature/terminal-installer`)
+A no-browser onboarding path; the browser wizard stays as the optional rich path feeding
+the SAME config (`/api/setup/complete`).
+- **`install.sh`** (repo root) — the one file the operator runs. Preflight (git/curl/docker
+  + daemon) → clone/pull → prompts → write `deploy/docker/.env` → deploy → onboard → summary.
+  On ANY failure it stops with a named reason and tears the stack down (`compose down -v`)
+  so the box is left clean — never half-deployed.
+- **`app/cli_install.py`** — the testable logic the script drives, reusing existing APIs (not
+  reimplemented): priority uniqueness via `GET <primary>/api/cluster/health`; bidirectional
+  reachability via `POST <local>/api/setup/complete` (→ `/federation/enroll`, primary connects
+  back to this node's `/federation/ping`). Plus `.env` rendering + the non-interactive deploy
+  invocation.
+- **`deploy/docker/deploy.sh`** — added `INFRADOCS_NONINTERACTIVE=1`: reuse the pre-written
+  `.env`, never prompt, and SKIP the browser-exposure menu entirely (no Tailscale).
+- **Mesh-agnostic:** the installer never installs/assumes Tailscale or any VPN; the node is
+  reachable at the operator-supplied ADDRESS, which is exactly what gets stored and what the
+  leader-redirect points at (`current_leader_address` from the roster). Neutralized "tailnet"
+  wording in the onboarding copy (Setup placeholder, enroll/advertise comments).
+- **Tests (`tests/test_cli_install.py`, 13):** priority range + uniqueness rejection (mocked
+  health), reachability-fail refusal surfacing per-direction verdict, priority-conflict reason,
+  `.env` rendered correctly + no mesh assumption, primary/secondary body building, and the
+  non-interactive deploy invocation (mocked subprocess).
+
+## HOW TO INSTALL ON A NEW SERVER
+On a fresh box (Docker + git + curl present), download and run the one file:
+```bash
+curl -fsSL https://raw.githubusercontent.com/looking4manish/InfraDocs_V6/main/install.sh -o install.sh
+bash install.sh
+```
+(or `bash install.sh` from an existing checkout). You'll be asked:
+- a short node id;
+- **this node's reachable address** (e.g. `http://HOST-OR-IP:8081`) — any transport (VPN/VPC/LAN);
+- whether this is the FIRST node (→ primary, priority 1) or a secondary;
+- for a secondary: the **primary's address** + a **join token** (mint on the primary), and a
+  **priority 1-99** — validated live: out-of-range or already-taken priorities are rejected,
+  and enrollment is refused unless reachability proves out BOTH directions.
+It then deploys the stack and onboards the node, ending with a summary (role, priority,
+address, and for a secondary the confirmed-reachable primary). The dashboard is then at the
+address you gave (login `admin` / the `.env` password — change it).
+
+> Env overrides: `INFRADOCS_REPO_URL`, `INFRADOCS_DIR` (default `~/infradocs`), `INFRADOCS_BRANCH`
+> (default `main`). A scripted/config-file path exists implicitly — install.sh just writes the
+> same `.env` + calls the same `/api/setup/complete`; a non-interactive UX was not built this session.
+
+## REVIEW BEFORE DEPLOY
+1. **Residual transport mentions are cosmetic, not dependencies.** The browser wizard still
+   OFFERS a "Tailscale" exposure choice and the IP-detector still LABELS tailscale/CGNAT
+   addresses — both are conveniences, neither is required by onboarding or the installer.
+   `deploy.sh`'s Tailscale path only runs in its INTERACTIVE mode (the installer always uses
+   `INFRADOCS_NONINTERACTIVE=1`, which skips it). If you want the browser wizard fully
+   mesh-neutral too, drop its tailscale exposure option separately.
+2. **The installer was NOT run on any host** (operator UAT). It is syntax-checked (`bash -n`),
+   its Python logic is unit-tested, but the end-to-end clone→deploy→onboard path has only been
+   exercised in pieces. Run it on the first (primary) box, then a secondary, and confirm the
+   bidirectional check + priority rejection behave live.
+3. **Admin password.** The installer uses `admin` / `ADMIN_PASSWORD` from `.env`
+   (default `Changeme001`) to drive `/api/setup/complete`; the operator must change it after.
+
+**Installer landed on branch `feature/terminal-installer` (pushed), NOT on main.** Job 1's
+merge IS on main. Not deployed anywhere.

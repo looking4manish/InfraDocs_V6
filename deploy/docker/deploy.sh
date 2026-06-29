@@ -9,12 +9,20 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$HERE"
 
+# Non-interactive mode (set by install.sh): reuse a pre-written .env, never prompt,
+# and skip the browser-exposure menu entirely (the operator already supplied the
+# reachable address — transport-agnostic, no Tailscale).
+NONINT="${INFRADOCS_NONINTERACTIVE:-}"
+
 say()  { printf "\n\033[1;36m> %s\033[0m\n" "$1"; }
 warn() { printf "\033[1;33m! %s\033[0m\n" "$1"; }
 ask()  { local p="$1" d="$2" v; read -rp "$p [$d]: " v; printf '%s' "${v:-$d}"; }
 
 # --- 1. Docker -----------------------------------------------------------
 if ! command -v docker >/dev/null 2>&1; then
+  if [[ -n "$NONINT" ]]; then
+    echo "Docker is required but not installed (non-interactive). Install Docker, then retry."; exit 1
+  fi
   warn "Docker is not installed."
   read -rp "Install Docker now (needs sudo)? [Y/n]: " a
   if [[ "${a:-Y}" =~ ^[Yy] ]]; then
@@ -32,6 +40,8 @@ if docker info >/dev/null 2>&1; then DC=(docker compose); else DC=(sudo docker c
 # --- 2. Minimal .env (the rest is configured in the web wizard) ----------
 if [[ -f .env ]]; then
   say ".env exists - reusing it. (Delete deploy/docker/.env to reconfigure.)"
+elif [[ -n "$NONINT" ]]; then
+  echo "No deploy/docker/.env present (non-interactive). install.sh should write it first."; exit 1
 else
   say "Minimal config - everything else is set in the web wizard after login."
   SERVER_ID=$(ask "Server id (short, e.g. oci-p)" "$(hostname -s 2>/dev/null || echo infradocs)")
@@ -73,13 +83,21 @@ done
 [[ -n "$ok" ]] && say "InfraDocs is up." || warn "API not ready - check: ${DC[*]} --env-file .env logs api"
 
 # --- 5. Make the wizard reachable from a browser ------------------------
+WIZ_URL=""
+if [[ -n "$NONINT" ]]; then
+  # install.sh drives onboarding over the terminal + the operator-supplied address;
+  # no browser-exposure step, no Tailscale. Report the local URL the installer probes.
+  WIZ_URL="${INFRADOCS_ADVERTISE_URL:-http://localhost:${WEB_PORT}}"
+  say "Non-interactive: stack is up. Onboarding handled by install.sh."
+  echo "Local URL: http://localhost:${WEB_PORT}  ·  reachable at: ${WIZ_URL}"
+  exit 0
+fi
 say "How should you open the wizard in your browser?"
 echo "  1) Tailscale  (private URL on your tailnet - recommended, no domain/firewall)"
 echo "  2) Public IP  (open the port in your cloud firewall, browse the IP)"
 echo "  3) Skip       (I'll expose it myself)"
 HOW=$(ask "Choose 1-3" "1")
 
-WIZ_URL=""
 case "$HOW" in
   1)
     if ! command -v tailscale >/dev/null 2>&1; then
