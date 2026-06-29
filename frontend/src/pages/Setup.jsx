@@ -136,7 +136,7 @@ export default function Setup({ onDone }) {
               <input className={field} placeholder="Join token (from the primary)"
                 value={joinToken} onChange={(e) => setJoinToken(e.target.value)} />
               <input className={field}
-                placeholder="This server's address — how the primary reaches you (e.g. http://100.x.y.z:8090)"
+                placeholder="This server's reachable address — how the primary reaches you (e.g. http://HOST-OR-IP:8081)"
                 value={advertiseUrl} onChange={(e) => setAdvertiseUrl(e.target.value)} />
               <input className={field} type="number" min="1" max="99"
                 placeholder="Failover priority 1-99 (1 = highest; must be free)"

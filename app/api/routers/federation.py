@@ -131,7 +131,7 @@ def _known_priorities(db: DBManager) -> dict:
 
 class EnrollRequest(BaseModel):
     server_id: str
-    secondary_url: str   # the secondary's own tailnet address, for the back-connection
+    secondary_url: str   # the secondary's own reachable address, for the back-connection
     join_token: str
     priority: int        # 1-99; the primary rejects a priority already taken
 

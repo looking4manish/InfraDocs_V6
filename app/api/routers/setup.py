@@ -149,7 +149,7 @@ class CompleteRequest(BaseModel):
     domain: Optional[str] = None
     primary_url: Optional[str] = None    # for secondary
     join_token: Optional[str] = None     # for secondary
-    advertise_url: Optional[str] = None  # this node's own reachable (tailnet) address
+    advertise_url: Optional[str] = None  # this node's own reachable address (any transport)
     priority: Optional[int] = None       # 1-99; secondary picks a free one (primary auto = 1)
     # Optional AI labeling — any OpenAI-compatible endpoint (OpenAI / local Ollama / …).
     ai_endpoint: Optional[str] = None
