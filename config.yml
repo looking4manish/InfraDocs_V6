@@ -18,7 +18,33 @@ mongodb:
   database: infradocs
 
 paths:
+  # Dedicated root: every direct subfolder is treated as an application (classic).
   projects_root: /home/msinha/projects
+  # Full-disk discovery so an app installed ANYWHERE shows up — not just ~/projects.
+  # direct_roots: install-style roots where each direct child is an app
+  #   (/opt/<app>, /srv/<app>, /var/www/<site>).
+  # scan_roots:   broader roots recursively hunted for project markers
+  #   (docker-compose.yml / .git) only — so /home/<user> and /etc don't each
+  #   become an "app". Docker- and systemd-registered services are covered by
+  #   their own scanners on top of this.
+  # Override per-box without editing this file via INFRADOCS_DIRECT_ROOTS /
+  # INFRADOCS_SCAN_ROOTS (comma-separated).
+  direct_roots:
+    - /opt
+    - /srv
+    - /var/www
+  scan_roots:
+    - /opt
+    - /srv
+    - /usr/local
+    - /var/www
+    - /home
+    - /etc
+  # How deep the marker hunt descends under each scan/direct root.
+  scan_depth: 3
+  # Wall-clock cap (seconds) for the whole filesystem discovery pass; a full-disk
+  # scan can never hang the pipeline. Set <=0 to disable.
+  scan_timeout_seconds: 120
   data_root: /data/infradocs
   logs_dir: logs
   artifacts_dir: artifacts

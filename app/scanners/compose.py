@@ -1,10 +1,22 @@
-"""Docker Compose scanner — finds compose files under projects_root."""
+"""Docker Compose scanner — finds compose files across the configured scan roots.
 
+Walks the SAME full-disk footprint as the project detector (projects_root +
+direct_roots + scan_roots) so a compose app installed anywhere on disk is found,
+not just under one home-relative folder. Shares the detector's traversal guards:
+pseudo-fs / network-mount skipping, a bounded depth, and a wall-clock deadline so
+a full-disk walk can never hang the scan.
+"""
+
+import time
 from pathlib import Path
 from typing import Any, Dict, List
 
 import yaml
 
+from app.core.project_detector import (
+    DEFAULT_SCAN_TIMEOUT, _MAX_DEPTH, _SKIP_DIRS, _read_base, _skip_mountpoints,
+    _to_real, _PSEUDO_DIRS,
+)
 from app.scanners.base import BaseScanner
 
 
@@ -15,18 +27,6 @@ COMPOSE_FILENAMES = (
     "compose.yaml",
 )
 
-# Skip these directory names when walking — node_modules can hide thousands of
-# stub compose.yml files that aren't real deployments.
-SKIP_DIRS = {
-    "node_modules",
-    "venv",
-    ".venv",
-    ".git",
-    "dist",
-    "build",
-    "__pycache__",
-}
-
 
 class ComposeScanner(BaseScanner):
     @property
@@ -34,36 +34,65 @@ class ComposeScanner(BaseScanner):
         return "compose"
 
     def scan(self) -> List[Dict[str, Any]]:
-        root = self.project_detector.projects_root
-        if not root.exists():
-            self.add_error(f"projects_root not found: {root}")
-            return []
+        pd = self.project_detector
+        roots = pd.discovery_roots()
+        depth = min(getattr(pd, "scan_depth", 3), _MAX_DEPTH)
+        self._skip_mounts = _skip_mountpoints()
+        self._deadline = time.monotonic() + DEFAULT_SCAN_TIMEOUT
 
         assets: List[Dict[str, Any]] = []
-        for path in self._walk(root):
-            try:
-                assets.append(self._parse_compose(path))
-            except Exception as e:
-                self.add_error(f"parse {path}: {e}")
+        seen_dirs: set = set()   # a compose app is its dir; don't emit it twice
+        found_any_root = False
+        for root in roots:
+            base = _read_base(root)   # host-mount translation in a container
+            if base is None:
+                continue
+            found_any_root = True
+            for path in self._walk(base, depth):
+                real = _to_real(path)
+                if str(real.parent) in seen_dirs:
+                    continue
+                seen_dirs.add(str(real.parent))
+                try:
+                    assets.append(self._parse_compose(path, real))
+                except Exception as e:
+                    self.add_error(f"parse {real}: {e}")
+        if not found_any_root:
+            self.add_error(f"no scan roots readable: {[str(r) for r in roots]}")
         return [a for a in assets if a is not None]
 
-    def _walk(self, root: Path):
-        """Walk projects_root yielding compose files, skipping noise dirs."""
-        stack = [root]
+    def _walk(self, root: Path, depth: int):
+        """Walk `root` (bounded depth, guarded) yielding compose files."""
+        stack = [(root, 0)]
         while stack:
-            current = stack.pop()
+            if time.monotonic() > self._deadline:
+                self.add_error(f"compose walk timed out under {_to_real(root)}")
+                return
+            current, lvl = stack.pop()
             try:
-                for entry in current.iterdir():
-                    if entry.is_dir():
-                        if entry.name in SKIP_DIRS or entry.name.startswith("."):
-                            continue
-                        stack.append(entry)
-                    elif entry.is_file() and entry.name in COMPOSE_FILENAMES:
-                        yield entry
+                entries = list(current.iterdir())
             except (PermissionError, OSError):
                 continue
+            for entry in entries:
+                try:
+                    is_dir = entry.is_dir()
+                except OSError:
+                    continue
+                if is_dir:
+                    real = _to_real(entry)
+                    if (
+                        entry.name in _SKIP_DIRS
+                        or entry.name.startswith(".")
+                        or str(real) in _PSEUDO_DIRS
+                        or str(real) in self._skip_mounts
+                    ):
+                        continue
+                    if lvl < depth:
+                        stack.append((entry, lvl + 1))
+                elif entry.name in COMPOSE_FILENAMES:
+                    yield entry
 
-    def _parse_compose(self, path: Path) -> Dict[str, Any]:
+    def _parse_compose(self, path: Path, real: Path) -> Dict[str, Any]:
         with open(path, "r") as f:
             data = yaml.safe_load(f) or {}
 
@@ -71,16 +100,16 @@ class ComposeScanner(BaseScanner):
         volumes = data.get("volumes") or {}
         networks = data.get("networks") or {}
 
-        project = self.project_detector.get_project_from_path(str(path))
+        project = self.project_detector.get_project_from_path(str(real))
 
         return self.create_asset(
             category="docker_compose",
-            asset_id=f"{self.server_id}:compose:{path}",
-            name=path.parent.name,
+            asset_id=f"{self.server_id}:compose:{real}",
+            name=real.parent.name,
             status="configured",
             project=project,
             metadata={
-                "file_path": str(path),
+                "file_path": str(real),
                 "services": list(services.keys()),
                 "services_count": len(services),
                 "volumes_count": len(volumes),
