@@ -36,11 +36,25 @@ class MongoDBConfig(BaseModel):
         return value
 
 
+# Sensible full-disk defaults so discovery covers "anywhere an app can live",
+# not just one home-relative folder — used when config.yml omits these keys.
+DEFAULT_DIRECT_ROOTS: List[str] = ["/opt", "/srv", "/var/www"]
+DEFAULT_SCAN_ROOTS: List[str] = ["/opt", "/srv", "/usr/local", "/var/www", "/home", "/etc"]
+
+
 class PathsConfig(BaseModel):
     projects_root: str
-    # Extra roots to HUNT for scattered projects (marker-based: docker-compose.yml/.git).
+    # Extra roots whose DIRECT children are each an application (install layout:
+    # /opt/<app>, /srv/<app>, /var/www/<site>). Direct discovery, like projects_root.
+    direct_roots: Optional[List[str]] = None
+    # Broader roots to recursively HUNT for scattered projects
+    # (marker-based: docker-compose.yml / .git). Marker-only so /home/<user> and
+    # /etc/<config> don't each become an "app".
     scan_roots: Optional[List[str]] = None
     scan_depth: int = 2
+    # Wall-clock cap (seconds) for the whole filesystem discovery pass so a
+    # full-disk scan can never hang the pipeline. <=0 disables the cap.
+    scan_timeout_seconds: int = 120
     data_root: str
     logs_dir: str = "logs"
     artifacts_dir: str = "artifacts"
@@ -107,10 +121,22 @@ def load_config(config_path: str = "config.yml") -> Config:
     _env_override(raw, "mongodb", "database", "INFRADOCS_DB")
     _env_override(raw, "auth", "username", "INFRADOCS_API_USERNAME")
 
-    # Comma-separated extra roots to hunt for scattered projects.
-    roots_env = os.environ.get("INFRADOCS_SCAN_ROOTS")
-    if roots_env and isinstance(raw.get("paths"), dict):
-        raw["paths"]["scan_roots"] = [r.strip() for r in roots_env.split(",") if r.strip()]
+    # Comma-separated root overrides (env wins). Marker-hunt roots and direct
+    # (one-folder-per-app) roots are configured independently.
+    paths = raw.get("paths")
+    if isinstance(paths, dict):
+        roots_env = os.environ.get("INFRADOCS_SCAN_ROOTS")
+        if roots_env is not None:
+            paths["scan_roots"] = [r.strip() for r in roots_env.split(",") if r.strip()]
+        direct_env = os.environ.get("INFRADOCS_DIRECT_ROOTS")
+        if direct_env is not None:
+            paths["direct_roots"] = [r.strip() for r in direct_env.split(",") if r.strip()]
+        # Full-disk defaults when neither config.yml nor env supplied a value, so
+        # discovery can never silently collapse back to the single projects_root.
+        if paths.get("scan_roots") is None:
+            paths["scan_roots"] = list(DEFAULT_SCAN_ROOTS)
+        if paths.get("direct_roots") is None:
+            paths["direct_roots"] = list(DEFAULT_DIRECT_ROOTS)
 
     return Config(**raw)
 

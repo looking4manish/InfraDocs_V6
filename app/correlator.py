@@ -92,15 +92,24 @@ def _group(assets: Iterable[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
     return out
 
 
-def _project_dirs(projects_root: str) -> Set[str]:
-    root = Path(projects_root)
-    if not root.exists():
-        return set()
-    return {
-        p.name
-        for p in root.iterdir()
-        if p.is_dir() and not p.name.startswith(".")
-    }
+def _project_dirs(projects_root: str, direct_roots: Optional[List[str]] = None) -> Dict[str, str]:
+    """name -> full path for every direct child of projects_root and each
+    direct root (/opt/<app>, /srv/<app>, …). These are the install-style roots
+    where one folder == one application, so each surfaces as a project bucket
+    even with no running evidence yet. Broader marker-hunt roots are NOT walked
+    here — those apps surface via their assets' `project` tag instead."""
+    out: Dict[str, str] = {}
+    for root_str in [projects_root, *(direct_roots or [])]:
+        root = Path(root_str)
+        try:
+            if not root.exists():
+                continue
+            for p in root.iterdir():
+                if p.is_dir() and not p.name.startswith("."):
+                    out.setdefault(p.name, str(p))  # first root wins on name clash
+        except OSError:
+            continue
+    return out
 
 
 def _domain_matches(cert_domain: str, server_name: str) -> bool:
@@ -177,16 +186,17 @@ def correlate(
     *,
     server_id: str,
     projects_root: str,
+    direct_roots: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Run correlation and return one app document per project + one System app."""
     by_cat = _group(assets)
     apps: Dict[str, Dict[str, Any]] = {}
 
-    project_names = _project_dirs(projects_root)
-    for pname in project_names:
+    project_dirs = _project_dirs(projects_root, direct_roots)
+    for pname, ppath in project_dirs.items():
         apps[pname] = _empty_app(
             pname,
-            source=str(Path(projects_root) / pname),
+            source=ppath,
             type_="project",
         )
     for a in assets:

@@ -70,8 +70,11 @@ def run_scan(args):
     pd = ProjectDetector(
         projects_root=cfg.paths.projects_root,
         scan_roots=cfg.paths.scan_roots,
+        direct_roots=cfg.paths.direct_roots,
         scan_depth=cfg.paths.scan_depth,
+        scan_timeout_seconds=cfg.paths.scan_timeout_seconds,
         discovered=discover_docker_projects(),
+        logger=logger,
     )
     scanners = []
     for name in cfg.scanning.enabled_scanners:
@@ -128,6 +131,7 @@ def run_scan(args):
         all_assets,
         server_id=cfg.server.id,
         projects_root=cfg.paths.projects_root,
+        direct_roots=cfg.paths.direct_roots,
     )
     attach_root_paths(applications, pd.project_paths())
     apps_written = db.replace_applications(applications)

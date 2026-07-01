@@ -62,60 +62,75 @@ def test_logger_setup(tmp_path):
     assert "hello world" in content
 
 
-def test_project_detector_scans_real_projects():
+# These tests build a CONTROLLED projects_root under tmp_path rather than
+# asserting against the live /home/msinha/projects tree — that tree drifts (it
+# was nearly emptied by a folder deletion, and the checkout here is `infradocs`,
+# not `InfraDocs_V6`), which made the old versions flaky-by-environment. They now
+# test detector LOGIC deterministically. See tests/test_project_discovery.py for
+# the multi-root / full-disk discovery + exclusion-guard coverage.
+def test_project_detector_scans_projects(tmp_path):
     from app.core.project_detector import ProjectDetector
 
-    pd = ProjectDetector(projects_root="/home/msinha/projects")
+    (tmp_path / "InfraDocs_V6").mkdir()
+    (tmp_path / "otherapp").mkdir()
+    pd = ProjectDetector(projects_root=str(tmp_path))
     projects = pd.list_projects()
-    # We expect at least InfraDocs_V6 itself + a few real dirs
     assert "InfraDocs_V6" in projects
     assert len(projects) >= 2
 
 
-def test_project_detector_path_resolution():
+def test_project_detector_path_resolution(tmp_path):
     from app.core.project_detector import ProjectDetector
 
-    pd = ProjectDetector(projects_root="/home/msinha/projects")
-    # Inside a real project dir
-    assert pd.get_project_from_path("/home/msinha/projects/InfraDocs_V6/foo/bar") == "InfraDocs_V6"
-    # Outside projects root
+    (tmp_path / "InfraDocs_V6").mkdir()
+    pd = ProjectDetector(projects_root=str(tmp_path))
+    # Inside a discovered project dir
+    assert pd.get_project_from_path(str(tmp_path / "InfraDocs_V6" / "foo" / "bar")) == "InfraDocs_V6"
+    # Outside any project root
     assert pd.get_project_from_path("/etc/nginx/nginx.conf") == "System"
     # Empty path
     assert pd.get_project_from_path("") == "System"
 
 
-def test_project_detector_rejects_service_name_inference():
+def test_project_detector_rejects_service_name_inference(tmp_path):
     """V5 regression: cloud-init.service must NOT become 'Cloud' project."""
     from app.core.project_detector import ProjectDetector
 
-    pd = ProjectDetector(projects_root="/home/msinha/projects")
+    proj = tmp_path / "InfraDocs_V6"
+    (proj / "deploy").mkdir(parents=True)
+    pd = ProjectDetector(projects_root=str(tmp_path))
     assert pd.get_project_from_service_name("cloud-init.service") == "System"
     assert pd.get_project_from_service_name("apport-autoreport.service") == "System"
     # With unit file path inside a project, it should resolve
     assert (
         pd.get_project_from_service_name(
             "infradocs.service",
-            unit_file_path="/home/msinha/projects/InfraDocs_V6/deploy/infradocs.service",
+            unit_file_path=str(proj / "deploy" / "infradocs.service"),
         )
         == "InfraDocs_V6"
     )
 
 
-def test_project_detector_container_label():
+def test_project_detector_container_label(tmp_path):
     from app.core.project_detector import ProjectDetector
 
-    pd = ProjectDetector(projects_root="/home/msinha/projects")
+    (tmp_path / "openwebui").mkdir()
+    pd = ProjectDetector(projects_root=str(tmp_path))
     labels = {"com.docker.compose.project": "openwebui"}
-    # Only resolves if openwebui actually exists as a project dir
-    result = pd.get_project_from_container(labels, working_dir="")
-    assert result in {"openwebui", "System"}
+    # Resolves because openwebui exists as a project dir
+    assert pd.get_project_from_container(labels, working_dir="") == "openwebui"
+    # Unknown compose project with no path evidence → System
+    assert pd.get_project_from_container(
+        {"com.docker.compose.project": "ghost"}, working_dir=""
+    ) == "System"
 
 
-def test_project_detector_domain_mapping():
+def test_project_detector_domain_mapping(tmp_path):
     from app.core.project_detector import ProjectDetector
 
-    pd = ProjectDetector(projects_root="/home/msinha/projects")
-    # infra.* → InfraDocs_V6 (V6 dir exists)
+    (tmp_path / "InfraDocs_V6").mkdir()
+    pd = ProjectDetector(projects_root=str(tmp_path))
+    # infra.* → InfraDocs_V6 (dir exists → mapping resolves)
     assert pd.get_project_from_domain("infra.ocialwaysfree.site") == "InfraDocs_V6"
     # unknown subdomain → System
     assert pd.get_project_from_domain("unknown.example.com") == "System"

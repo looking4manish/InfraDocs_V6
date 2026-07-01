@@ -13,6 +13,7 @@ from app.core.db_manager import DBManager
 from app.core.project_detector import (
     ProjectDetector, attach_root_paths, discover_docker_projects,
 )
+from app.core.logger import get_scan_logger
 from app.correlator import SYSTEM_BUCKET, correlate
 from app.ports_registry import build_ports_registry
 from app.scanners.registry import SCANNERS
@@ -45,8 +46,11 @@ def _run_scan_job(scan_id: str, cfg: Config):
     pd = ProjectDetector(
         projects_root=cfg.paths.projects_root,
         scan_roots=cfg.paths.scan_roots,
+        direct_roots=cfg.paths.direct_roots,
         scan_depth=cfg.paths.scan_depth,
+        scan_timeout_seconds=cfg.paths.scan_timeout_seconds,
         discovered=discover_docker_projects(),
+        logger=get_scan_logger("api"),
     )
     per_scanner = []
     all_assets = []
@@ -78,6 +82,7 @@ def _run_scan_job(scan_id: str, cfg: Config):
         all_assets,
         server_id=cfg.server.id,
         projects_root=cfg.paths.projects_root,
+        direct_roots=cfg.paths.direct_roots,
     )
     attach_root_paths(applications, pd.project_paths())
     apps_written = db.replace_applications(applications)

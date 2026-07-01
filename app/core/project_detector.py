@@ -1,11 +1,30 @@
-"""Project detection.
+"""Project / application detection.
 
-A "project" is a directory that owns assets. Projects are discovered from:
-  - direct subfolders of each configured root (the classic single-root model),
-  - a bounded filesystem scan for project markers (docker-compose.yml / .git)
-    under those roots — so nested/scattered projects are found, and
+A "project" (application) is a directory that owns assets. Apps do NOT only live
+under one home-relative folder — on a real Linux server they are scattered across
+`/opt`, `/srv`, `/var/www`, `/usr/local`, user homes, etc. This detector therefore
+scans a CONFIGURABLE set of roots with a sensible full-disk default (see
+`config.yml` → `paths.direct_roots` / `paths.scan_roots`) so an app installed
+anywhere on disk shows up — it can never silently regress to a single directory.
+
+Projects are discovered from:
+  - direct subfolders of each *direct* root — `projects_root` plus `direct_roots`
+    (the classic "one folder per app" install layout: /opt/<app>, /srv/<app>, …),
+  - a bounded, guarded filesystem scan for project markers
+    (docker-compose.yml / .git) under both the direct roots AND the broader
+    `scan_roots` — so nested/scattered projects are found without turning every
+    subfolder of /home into a "project", and
   - Docker Compose working-dirs (passed in via `discovered`) — the exact host
     path of each compose app, wherever it lives.
+
+Full-disk-scan hazards are guarded: pseudo-filesystems (/proc, /sys, /dev, /run)
+and network/tmpfs/overlay/squashfs mounts are skipped, traversal depth is bounded
+by both the configured `scan_depth` and a hard ceiling, noise dirs
+(node_modules, .git, venv, snap/flatpak internals, …) are excluded,
+permission-denied is tolerated per-dir, and a wall-clock deadline caps the whole
+detector so a scan can never hang the pipeline. A configured root that exists but
+cannot be read is logged LOUDLY with a named reason (it is not swallowed); a root
+that is merely absent on this box is skipped quietly.
 
 Every project carries its full path, so scattered layouts (/data/x,
 /home/data/project/y, …) are listed with their real location. Assets whose path
@@ -14,9 +33,11 @@ everything else is "System". Project names are NEVER inferred from service-name
 prefixes (the V5 'cloud-init -> Cloud' bug).
 """
 
+import logging
 import os
+import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 # In a container the host root is mounted here; read filesystem scans through it
 # but record the REAL host path so it matches asset paths from docker/scanners.
@@ -26,7 +47,53 @@ _MARKERS = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose
 _SKIP_DIRS = {
     "node_modules", "__pycache__", ".git", "venv", ".venv", "env", "vendor",
     "site-packages", ".cache", "dist", "build", "target", "backups",
+    ".npm", ".cargo", ".rustup", ".gradle", ".m2", ".terraform",
+    "snap", ".snap", "flatpak", ".flatpak", ".local", "lost+found",
 }
+
+# Real (host) absolute paths never entered: pseudo / virtual / image-store dirs.
+# Matched against the REAL path so it works both native and via the /host mount.
+_PSEUDO_DIRS = {
+    "/proc", "/sys", "/dev", "/run", "/lost+found",
+    "/var/lib/docker", "/var/lib/containerd", "/var/lib/snapd",
+    "/snap", "/sys/fs/cgroup",
+}
+
+# Filesystem types whose mountpoints we refuse to descend into: network shares,
+# ephemeral/in-memory FSes, and image/overlay FSes. Keeps a full-disk walk from
+# wandering onto an NFS mount or blowing up on a squashfs snap.
+_SKIP_FSTYPES = {
+    "tmpfs", "devtmpfs", "proc", "sysfs", "cgroup", "cgroup2", "devpts",
+    "mqueue", "debugfs", "tracefs", "securityfs", "pstore", "bpf", "configfs",
+    "nfs", "nfs4", "cifs", "smb3", "fuse.sshfs", "fuse.rclone", "fuse.gvfsd-fuse",
+    "overlay", "squashfs", "autofs", "fusectl", "binfmt_misc",
+}
+
+# Hard ceiling on traversal depth regardless of the configured scan_depth, plus a
+# cap on how many directories a single detector run will visit. Belt-and-braces
+# alongside the wall-clock deadline.
+_MAX_DEPTH = 8
+_MAX_DIRS_VISITED = 200_000
+# Default wall-clock budget for the whole detector (seconds). Overridable via
+# config (paths.scan_timeout_seconds) / the constructor.
+DEFAULT_SCAN_TIMEOUT = 120
+
+_log = logging.getLogger("app.core.project_detector")
+
+
+def _skip_mountpoints() -> Set[str]:
+    """Real mountpoints whose fstype is in `_SKIP_FSTYPES` — do not descend into
+    these during a full-disk walk. Best-effort: any read error → empty set."""
+    out: Set[str] = set()
+    try:
+        with open("/proc/mounts", "r") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 3 and parts[2] in _SKIP_FSTYPES:
+                    out.add(parts[1])
+    except OSError:
+        pass
+    return out
 
 
 def _read_base(root: Path) -> Optional[Path]:
@@ -91,20 +158,81 @@ class ProjectDetector:
         self,
         projects_root: Optional[str] = None,
         scan_roots: Optional[List[str]] = None,
+        direct_roots: Optional[List[str]] = None,
         scan_depth: int = 2,
+        scan_timeout_seconds: Optional[int] = None,
         discovered: Optional[Dict[str, str]] = None,
+        logger: Optional[logging.Logger] = None,
     ):
         self.projects_root = Path(projects_root or "/home/msinha/projects")
-        self._projects: Dict[str, Path] = {}  # name -> resolved dir
+        # Extra roots whose *direct* children are each an application (install-style
+        # layout: /opt/<app>, /srv/<app>, /var/www/<site>). Configurable so this
+        # can't silently regress to one hardcoded directory.
+        self.direct_roots: List[Path] = [Path(r) for r in (direct_roots or [])]
+        # Broader roots to recursively HUNT for scattered projects by marker only
+        # (docker-compose.yml / .git) — so /home/<user> and /etc don't become "apps".
+        self.scan_roots: List[Path] = [Path(r) for r in (scan_roots or [])]
+        self.scan_depth = scan_depth
+        self._log = logger or _log
 
-        # Dedicated root: every direct subfolder is a project (classic) + nested markers.
-        self._discover_root(self.projects_root, scan_depth, direct=True)
-        # Extra scan roots: ONLY marker-bearing dirs — don't turn every subfolder of a
+        self._projects: Dict[str, Path] = {}  # name -> resolved dir
+        self._skip_mounts = _skip_mountpoints()
+        self._dirs_visited = 0
+        self._truncated = False
+        timeout = DEFAULT_SCAN_TIMEOUT if scan_timeout_seconds is None else scan_timeout_seconds
+        # A non-positive timeout means "no wall-clock cap".
+        self._deadline = (time.monotonic() + timeout) if timeout and timeout > 0 else None
+
+        # Direct roots: every direct subfolder is a project (classic) + nested markers.
+        for r in [self.projects_root, *self.direct_roots]:
+            self._discover_root(r, scan_depth, direct=True)
+        # Scan roots: ONLY marker-bearing dirs — don't turn every subfolder of a
         # broad root (e.g. /home) into a project.
-        for r in scan_roots or []:
-            self._discover_root(Path(r), scan_depth, direct=False)
+        for r in self.scan_roots:
+            self._discover_root(r, scan_depth, direct=False)
         for name, path in (discovered or {}).items():
             self._add(name, Path(path))
+
+        if self._truncated:
+            self._log.warning(
+                "project_detector: filesystem scan hit a resource cap "
+                "(deadline=%ss / max_depth=%s / max_dirs=%s, visited=%s dirs) — "
+                "results may be incomplete",
+                timeout, _MAX_DEPTH, _MAX_DIRS_VISITED, self._dirs_visited,
+            )
+
+    def discovery_roots(self) -> List[Path]:
+        """All roots this detector walks (dedup, order-preserving) — so other
+        scanners (e.g. compose) can cover the SAME full-disk footprint."""
+        seen: Set[str] = set()
+        out: List[Path] = []
+        for r in [self.projects_root, *self.direct_roots, *self.scan_roots]:
+            key = str(r)
+            if key not in seen:
+                seen.add(key)
+                out.append(r)
+        return out
+
+    # ---- guards ----
+    def _budget_exhausted(self) -> bool:
+        """True once the wall-clock deadline or the visited-dir cap is hit."""
+        if self._deadline is not None and time.monotonic() > self._deadline:
+            self._truncated = True
+            return True
+        if self._dirs_visited >= _MAX_DIRS_VISITED:
+            self._truncated = True
+            return True
+        return False
+
+    def _is_skippable(self, real_path: Path, name: str) -> bool:
+        """A dir we must not enter: noise dir, hidden, pseudo-fs, or a mount whose
+        fstype is network/tmpfs/overlay/etc. Checked on the REAL (host) path."""
+        if name in _SKIP_DIRS or name.startswith("."):
+            return True
+        rp = str(real_path)
+        if rp in _PSEUDO_DIRS or rp in self._skip_mounts:
+            return True
+        return False
 
     # ---- discovery ----
     def _add(self, name: str, path: Path) -> None:
@@ -118,33 +246,61 @@ class ProjectDetector:
         self._projects.setdefault(name, path)
 
     def _discover_root(self, root: Path, depth: int, direct: bool = True) -> None:
+        # Distinguish "absent on this box" (normal — skip quietly) from "present but
+        # unreadable" (a real problem — log LOUDLY with a named reason, don't crash).
         base = _read_base(root)   # read directly or via the container /host mount
         if base is None:
+            self._log.info("project_detector: scan root absent, skipping: %s", root)
+            return
+        real_root = _to_real(base)
+        if str(real_root) in _PSEUDO_DIRS or str(real_root) in self._skip_mounts:
+            self._log.info("project_detector: scan root is a pseudo/skipped mount, skipping: %s", root)
+            return
+        try:
+            entries = list(base.iterdir())
+        except (PermissionError, OSError) as e:
+            self._log.warning(
+                "project_detector: scan root UNREADABLE, skipping: %s (%s: %s)",
+                root, type(e).__name__, e,
+            )
             return
         if direct:
-            try:
-                for d in base.iterdir():
-                    if d.is_dir() and not d.name.startswith("."):
-                        self._add(d.name, _to_real(d))   # classic: direct subfolder = project
-            except OSError:
-                pass
+            for d in entries:
+                try:
+                    is_dir = d.is_dir()
+                except OSError:
+                    continue
+                real = _to_real(d)
+                if is_dir and not self._is_skippable(real, d.name):
+                    self._add(d.name, real)   # classic: direct subfolder = project
         self._marker_scan(base, depth)         # bounded hunt for (nested) project markers
 
     def _marker_scan(self, root: Path, depth: int) -> None:
+        cap = min(depth, _MAX_DEPTH)
         frontier = [(root, 0)]
         while frontier:
+            if self._budget_exhausted():
+                return
             d, lvl = frontier.pop()
             try:
                 entries = list(d.iterdir())
-            except OSError:
+            except (PermissionError, OSError):
+                # Permission-denied on a nested dir is expected on a full-disk walk;
+                # tolerate it and keep going (the root-level case is logged above).
                 continue
+            self._dirs_visited += 1
             names = {e.name for e in entries}
             if d != root and names.intersection(_MARKERS):
                 self._add(d.name, _to_real(d))
                 continue                  # a project marker → don't descend further
-            if lvl < depth:
+            if lvl < cap:
                 for e in entries:
-                    if e.is_dir() and not e.name.startswith(".") and e.name not in _SKIP_DIRS:
+                    try:
+                        if not e.is_dir():
+                            continue
+                    except OSError:
+                        continue
+                    if not self._is_skippable(_to_real(e), e.name):
                         frontier.append((e, lvl + 1))
 
     # ---- queries ----
