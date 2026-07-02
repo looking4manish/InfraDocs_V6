@@ -335,6 +335,23 @@ def test_config_default_scan_root_is_filesystem_root():
     assert "/usr/lib" in cfg.paths.scan_exclusions and "/boot" in cfg.paths.scan_exclusions
 
 
+def test_empty_scan_roots_env_does_not_disable_walk(tmp_path, monkeypatch):
+    """compose passes INFRADOCS_SCAN_ROOTS="" when unset — that must NOT collapse
+    scan_roots to [] (which would silently disable the whole from-/ walk); it falls
+    through to the config.yml / default value."""
+    import shutil
+    from app.core.config_loader import load_config
+
+    cfgfile = tmp_path / "config.yml"
+    shutil.copy(ROOT / "config.yml", cfgfile)
+    monkeypatch.setenv("INFRADOCS_SCAN_ROOTS", "")        # empty, as compose sets it
+    monkeypatch.setenv("INFRADOCS_DIRECT_ROOTS", "  ")    # whitespace
+    monkeypatch.setenv("INFRADOCS_SCAN_EXCLUSIONS", "")
+    cfg = load_config(str(cfgfile))
+    assert cfg.paths.scan_roots == ["/"]                  # default, not []
+    assert cfg.paths.direct_roots and cfg.paths.scan_exclusions
+
+
 def test_scan_root_and_exclusion_env_overrides(tmp_path, monkeypatch):
     """INFRADOCS_SCAN_ROOTS / INFRADOCS_SCAN_EXCLUSIONS widen/narrow without code edits."""
     import shutil

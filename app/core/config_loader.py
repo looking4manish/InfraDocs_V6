@@ -147,14 +147,18 @@ def load_config(config_path: str = "config.yml") -> Config:
     # (one-folder-per-app) roots are configured independently.
     paths = raw.get("paths")
     if isinstance(paths, dict):
+        # NOTE: an EMPTY/whitespace value means "not set" here — the compose file passes
+        # INFRADOCS_SCAN_ROOTS="${SCAN_ROOTS:-}" (empty when unset), and treating "" as
+        # an override would collapse scan_roots to [] and silently DISABLE the whole
+        # from-/ walk. So only override when the env var has real content.
         roots_env = os.environ.get("INFRADOCS_SCAN_ROOTS")
-        if roots_env is not None:
+        if roots_env and roots_env.strip():
             paths["scan_roots"] = [r.strip() for r in roots_env.split(",") if r.strip()]
         direct_env = os.environ.get("INFRADOCS_DIRECT_ROOTS")
-        if direct_env is not None:
+        if direct_env and direct_env.strip():
             paths["direct_roots"] = [r.strip() for r in direct_env.split(",") if r.strip()]
         excl_env = os.environ.get("INFRADOCS_SCAN_EXCLUSIONS")
-        if excl_env is not None:
+        if excl_env and excl_env.strip():
             paths["scan_exclusions"] = [r.strip() for r in excl_env.split(",") if r.strip()]
         # Deny-list-from-`/` defaults when neither config.yml nor env supplied a
         # value, so discovery can never silently collapse back to an allow-list.
