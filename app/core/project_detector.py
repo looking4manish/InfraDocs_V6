@@ -90,19 +90,40 @@ DEFAULT_SCAN_TIMEOUT = 120
 _log = logging.getLogger("app.core.project_detector")
 
 
-def _skip_mountpoints() -> Set[str]:
-    """Real mountpoints whose fstype is in `_SKIP_FSTYPES` — do not descend into
-    these during a full-disk walk. Best-effort: any read error → empty set."""
+def _parse_skip_mounts(lines, host_root: str) -> Set[str]:
+    """REAL (host) mountpoints whose fstype is in `_SKIP_FSTYPES`. When containerized
+    (host_root set, e.g. "/host"), host submounts appear under the /host bind, so strip
+    that prefix to get real host paths that match what the walk compares against.
+
+    The filesystem ROOT is NEVER included: a container's own root is an `overlay` mount,
+    and since "/" is an ancestor of EVERY path, including it would mark the whole disk —
+    and every candidate app dir — unscannable (this silently killed the from-/ walk and
+    all systemd/service promotion inside the container)."""
     out: Set[str] = set()
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 3 or parts[2] not in _SKIP_FSTYPES:
+            continue
+        mp = parts[1]
+        if host_root and mp == host_root:
+            continue                          # the /host bind of the container's own root
+        if host_root and mp.startswith(host_root + "/"):
+            mp = mp[len(host_root):]          # /host/mnt/nfs -> /mnt/nfs (real host path)
+        if mp == "/" or not mp:
+            continue                          # never skip the filesystem root itself
+        out.add(mp)
+    return out
+
+
+def _skip_mountpoints() -> Set[str]:
+    """Real mountpoints to refuse to descend into during a full-disk walk. Best-effort:
+    any read error → empty set."""
     try:
         with open("/proc/mounts", "r") as f:
-            for line in f:
-                parts = line.split()
-                if len(parts) >= 3 and parts[2] in _SKIP_FSTYPES:
-                    out.add(parts[1])
+            lines = f.readlines()
     except OSError:
-        pass
-    return out
+        return set()
+    return _parse_skip_mounts(lines, _HOST_ROOT)
 
 
 def _read_base(root: Path) -> Optional[Path]:

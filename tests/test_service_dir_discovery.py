@@ -5,8 +5,35 @@ miss where such a folder never showed up.
 """
 
 from app.correlator import correlate
-from app.core.project_detector import ProjectDetector
+from app.core.project_detector import ProjectDetector, _parse_skip_mounts
 from app.scanners.systemd import SystemdScanner
+
+
+# ---- containerized mount parsing (the overlay-root bug) ----
+
+def test_skip_mounts_never_includes_root_and_strips_host_prefix():
+    # A container's /proc/mounts: root is overlay, /host is the bind of it, and a real
+    # host nfs/tmpfs submount shows up under /host.
+    lines = [
+        "overlay / overlay rw 0 0",
+        "overlay /host overlay ro 0 0",
+        "nfs4 /host/mnt/share nfs4 rw 0 0",
+        "tmpfs /host/run/user/0 tmpfs rw 0 0",
+        "/dev/sda1 /host/data ext4 rw 0 0",   # real disk — must NOT be skipped
+    ]
+    skip = _parse_skip_mounts(lines, "/host")
+    assert "/" not in skip, "the filesystem root (overlay) must never be a skip mount"
+    assert "/host" not in skip
+    assert "/mnt/share" in skip and "/run/user/0" in skip   # real host paths, prefix stripped
+    assert "/data" not in skip                              # ext4 is not a skipped fstype
+
+
+def test_overlay_root_does_not_block_promotion():
+    # Simulate the container: '/' in skip_mounts must not make every dir unpromotable.
+    pd = ProjectDetector(projects_root="/nonexistent", scan_roots=[], direct_roots=[],
+                         exclude_paths=[])
+    pd._skip_mounts = {"/mnt/share"}   # a correctly-parsed skip set (no "/")
+    assert pd.is_promotable_dir("/home/data/project/mdb-discovery") is True
 
 
 # ---- detector.register_project_from_dir ----
