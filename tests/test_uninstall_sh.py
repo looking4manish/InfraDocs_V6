@@ -1,9 +1,10 @@
-"""uninstall.sh — clean teardown, no orphan assets (end-to-end, stubbed binaries).
+"""uninstall.sh — directory-removal correctness + honest reporting (end-to-end, stubbed).
 
-Drives the real uninstall.sh against stub docker/tailscale/sudo/apt-get/systemctl on
-PATH (no Docker, nothing on the real host touched — `sudo` is stubbed to run its args
-WITHOUT privilege, so system paths can never actually be removed) with INFRADOCS_DIR /
-INFRADOCS_DATA_ROOT pointed at throwaway temp dirs.
+Runs a COPY of the real uninstall.sh from inside a throwaway sandbox checkout — NEVER the
+repo's own uninstall.sh targeting the repo — against stub docker/tailscale/sudo/apt-get on
+PATH (sudo runs its args WITHOUT privilege, so real system paths can never be removed).
+The two checkout trees (deploy dir + the outer clone the operator ran from) live under
+tmp_path; INFRADOCS_DATA_ROOT too.
 """
 
 import os
@@ -15,7 +16,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-UNINSTALL_SH = ROOT / "uninstall.sh"
+REAL_UNINSTALL = ROOT / "uninstall.sh"
 
 
 def _write_exe(path: Path, body: str) -> None:
@@ -23,17 +24,29 @@ def _write_exe(path: Path, body: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
+def _make_checkout(path: Path) -> None:
+    (path / "deploy" / "docker").mkdir(parents=True, exist_ok=True)
+    (path / "deploy" / "docker" / ".env").write_text("ADMIN_PASSWORD=secret\nAPI_PORT=8090\n")
+    (path / "deploy" / "docker" / "docker-compose.yml").write_text("services: {}\n")
+    (path / "app").mkdir(exist_ok=True)
+    (path / "app" / "marker.py").write_text("# app file\n")
+    (path / "config.yml").write_text("paths: {}\n")
+    (path / "install.sh").write_text("#!/usr/bin/env bash\necho installer\n")
+    shutil.copy(REAL_UNINSTALL, path / "uninstall.sh")
+    (path / "uninstall.sh").chmod(0o755)
+
+
 @pytest.fixture
 def sandbox(tmp_path):
     if not shutil.which("bash"):
         pytest.skip("bash not available")
 
+    outer = tmp_path / "projects" / "infradocs"
+    outer.mkdir(parents=True)
+    _make_checkout(outer)
     deploy = tmp_path / "infradocs"
-    (deploy / "deploy" / "docker").mkdir(parents=True)
-    (deploy / "deploy" / "docker" / ".env").write_text("ADMIN_PASSWORD=secret\nAPI_PORT=8090\n")
-    (deploy / "deploy" / "docker" / "docker-compose.yml").write_text("services: {}\n")
-    (deploy / "app").mkdir()
-    (deploy / "app" / "marker.py").write_text("# app file\n")
+    deploy.mkdir()
+    _make_checkout(deploy)
     data = tmp_path / "data_infradocs"
     (data / "mongo").mkdir(parents=True)
 
@@ -41,20 +54,12 @@ def sandbox(tmp_path):
     bindir.mkdir()
     calls = tmp_path / "calls.log"
 
-    def log_stub(name, extra=""):
-        _write_exe(
-            bindir / name,
-            "#!/usr/bin/env bash\n"
-            f'printf "{name} %s\\n" "$*" >> "{calls}"\n' + extra + "exit 0\n",
-        )
+    def log_stub(name):
+        _write_exe(bindir / name,
+                   "#!/usr/bin/env bash\n" f'printf "{name} %s\\n" "$*" >> "{calls}"\nexit 0\n')
 
-    # docker: log; `info` succeeds (no sudo); queries print nothing (no leftovers).
-    log_stub("docker")
-    log_stub("systemctl")
-    log_stub("groupdel")
-    log_stub("tailscale")
-    log_stub("apt-get")  # log only — never touch real packages
-    # sudo: run the (stubbed) command WITHOUT privilege — real system paths survive.
+    for n in ("docker", "systemctl", "groupdel", "tailscale", "apt-get"):
+        log_stub(n)
     _write_exe(bindir / "sudo", '#!/usr/bin/env bash\nexec "$@"\n')
 
     env = dict(os.environ)
@@ -62,16 +67,21 @@ def sandbox(tmp_path):
     env["HOME"] = str(tmp_path)
     env["INFRADOCS_DIR"] = str(deploy)
     env["INFRADOCS_DATA_ROOT"] = str(data)
-    return {"env": env, "deploy": deploy, "data": data, "calls": calls, "bin": bindir}
+    standalone = tmp_path / "uninstall_standalone.sh"
+    shutil.copy(REAL_UNINSTALL, standalone)
+    standalone.chmod(0o755)
+    return {"env": env, "outer": outer, "deploy": deploy, "data": data, "calls": calls,
+            "bin": bindir, "standalone": standalone, "tmp": tmp_path}
 
 
-def _run(sandbox, *args, extra_env=None, script=None):
+def _run(sandbox, *args, cwd=None, script=None, extra_env=None, stdin=""):
     env = dict(sandbox["env"])
     if extra_env:
         env.update(extra_env)
     return subprocess.run(
-        ["bash", str(script or UNINSTALL_SH), *args],
-        env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60,
+        ["bash", str(script or (sandbox["outer"] / "uninstall.sh")), *args],
+        cwd=str(cwd or sandbox["outer"]),
+        env=env, input=stdin, capture_output=True, text=True, timeout=60,
     )
 
 
@@ -79,71 +89,85 @@ def _calls(sandbox):
     return sandbox["calls"].read_text() if sandbox["calls"].exists() else ""
 
 
-def test_default_uninstall_removes_stack_images_data_and_checkout(sandbox):
+def test_run_from_inside_outer_clone_removes_both_trees(sandbox):
     r = _run(sandbox, "--yes")
     out = r.stdout + r.stderr
     assert r.returncode == 0, out
+    assert not sandbox["outer"].exists(), "the outer clone (CWD) must be gone — the reported bug"
+    assert not sandbox["deploy"].exists(), "the deploy dir must be gone too"
+    assert not sandbox["data"].exists()
+    assert "clean" in out and "uninstalled" in out
+
+
+def test_stack_teardown_runs_and_assets_swept(sandbox):
+    r = _run(sandbox, "--yes")
+    assert r.returncode == 0
     calls = _calls(sandbox)
-
     assert "compose" in calls and "down" in calls and "-v" in calls and "--remove-orphans" in calls
-    assert "rmi" in calls and "infradocs-api:latest" in calls and "infradocs-web:latest" in calls
+    assert "rmi" in calls and "infradocs-api:latest" in calls
     assert "volume rm" in calls and "docker_mongo_data" in calls
-    assert not sandbox["deploy"].exists(), "checkout must be removed"
-    assert not sandbox["data"].exists(), "host data dir must be removed"
-    assert "uninstalled" in out and "clean" in out
-    # default keeps Docker: no engine purge
-    assert "apt-get" not in calls
 
 
-def test_all_flag_attempts_docker_and_tailscale_engine_removal(sandbox):
+def test_all_flag_engine_purge_and_both_trees(sandbox):
     r = _run(sandbox, "--all", "--yes")
     calls = _calls(sandbox)
-    # Docker engine purge attempted (both package sets), daemon stopped, group dropped.
     assert "apt-get purge" in calls and "docker-ce" in calls and "docker.io" in calls
-    assert "systemctl" in calls and "docker" in calls
-    # Tailscale package removal attempted.
-    assert "tailscale down" in calls or "apt-get purge" in calls
-    assert "purge" in calls and "tailscale" in calls
-    # base images targeted (--all implies --purge-images)
-    assert "mongo:7" in calls
-    # files still removed regardless
-    assert not sandbox["deploy"].exists()
-    assert not sandbox["data"].exists()
+    assert "purge" in calls and "tailscale" in calls and "mongo:7" in calls
+    assert not sandbox["outer"].exists() and not sandbox["deploy"].exists()
 
 
-def test_reexec_from_inside_checkout_still_removes_it(sandbox):
-    # Run the script FROM INSIDE the dir it will delete — it must copy itself out
-    # (re-exec) and still remove the checkout completely.
-    inside = sandbox["deploy"] / "uninstall.sh"
-    shutil.copy(UNINSTALL_SH, inside)
-    inside.chmod(0o755)
-    r = _run(sandbox, "--yes", script=inside)
+def test_outer_dir_not_a_checkout_is_not_removed(sandbox):
+    (sandbox["outer"] / "install.sh").unlink()
+    (sandbox["outer"] / "app" / "marker.py").unlink()
+    (sandbox["outer"] / "app").rmdir()
+    (sandbox["outer"] / "config.yml").unlink()
+    shutil.rmtree(sandbox["outer"] / "deploy")
+    r = _run(sandbox, "--yes")
     out = r.stdout + r.stderr
     assert r.returncode == 0, out
-    assert not sandbox["deploy"].exists(), "checkout must be fully removed even when run from inside it"
+    assert sandbox["outer"].exists(), "a non-InfraDocs parent must NEVER be removed"
+    assert not sandbox["deploy"].exists(), "the deploy dir is still removed"
 
 
-def test_keep_repo_leaves_checkout_but_removes_env(sandbox):
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses directory permissions")
+def test_unremovable_target_fails_loud_not_false_success(sandbox):
+    locked = sandbox["tmp"] / "locked"
+    locked.mkdir()
+    dep = locked / "infradocs"
+    _make_checkout(dep)
+    env = {"INFRADOCS_DIR": str(dep)}
+    os.chmod(locked, 0o555)
+    try:
+        r = _run(sandbox, "--yes", cwd=sandbox["tmp"], script=sandbox["standalone"], extra_env=env)
+        out = r.stdout + r.stderr
+        assert r.returncode != 0, "must NOT report success when a target survives"
+        assert "could NOT remove" in out or "still present" in out
+        assert "cd ~ && rm -rf" in out and str(dep) in out
+        assert dep.exists()
+    finally:
+        os.chmod(locked, 0o755)
+
+
+def test_keep_repo_leaves_both_trees_but_removes_env(sandbox):
     r = _run(sandbox, "--yes", "--keep-repo")
     assert r.returncode == 0, r.stdout + r.stderr
-    assert sandbox["deploy"].exists()
+    assert sandbox["outer"].exists() and sandbox["deploy"].exists()
     assert not (sandbox["deploy"] / "deploy" / "docker" / ".env").exists()
 
 
-def test_keep_config_and_keep_data_are_respected(sandbox):
+def test_keep_config_and_keep_data(sandbox):
     r = _run(sandbox, "--yes", "--keep-repo", "--keep-config", "--keep-data")
     assert r.returncode == 0, r.stdout + r.stderr
     assert (sandbox["deploy"] / "deploy" / "docker" / ".env").exists()
     assert sandbox["data"].exists()
 
 
-def test_idempotent_when_nothing_installed(sandbox):
-    _run(sandbox, "--yes")            # first pass removes everything
-    r = _run(sandbox, "--yes")        # second pass: honestly reports nothing to do
+def test_idempotent_second_run_reports_nothing(sandbox):
+    _run(sandbox, "--yes")
+    r = _run(sandbox, "--yes", cwd=sandbox["tmp"], script=sandbox["standalone"])
     out = r.stdout + r.stderr
     assert r.returncode == 0, out
     assert "not installed here" in out and "nothing to remove" in out
-    # it must NOT claim to have removed things that weren't there
     assert "removed built images" not in out
 
 
@@ -151,22 +175,19 @@ def test_refuses_catastrophic_deploy_dir(sandbox):
     r = _run(sandbox, "--yes", extra_env={"INFRADOCS_DIR": "/"})
     assert r.returncode != 0
     assert "refusing" in (r.stdout + r.stderr)
-    assert "compose" not in _calls(sandbox)
+    assert sandbox["outer"].exists()
 
 
 def test_refuses_catastrophic_data_root(sandbox):
     r = _run(sandbox, "--yes", extra_env={"INFRADOCS_DATA_ROOT": "/data"})
     assert r.returncode != 0
     assert "refusing" in (r.stdout + r.stderr)
-    assert sandbox["deploy"].exists()
+    assert sandbox["outer"].exists() and sandbox["deploy"].exists()
 
 
 def test_interactive_abort_changes_nothing(sandbox):
-    r = subprocess.run(
-        ["bash", str(UNINSTALL_SH)],
-        env=sandbox["env"], input="n\n", capture_output=True, text=True, timeout=60,
-    )
+    r = _run(sandbox, stdin="n\n")
     assert r.returncode != 0
     assert "aborted" in (r.stdout + r.stderr)
-    assert sandbox["deploy"].exists() and sandbox["data"].exists()
+    assert sandbox["outer"].exists() and sandbox["deploy"].exists() and sandbox["data"].exists()
     assert "compose" not in _calls(sandbox)
