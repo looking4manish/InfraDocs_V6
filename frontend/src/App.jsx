@@ -16,6 +16,7 @@ import Ports from "./pages/Ports";
 import Storage from "./pages/Storage";
 import Actions from "./pages/Actions";
 import Scans from "./pages/Scans";
+import AdminCluster from "./pages/AdminCluster";
 
 // Old detail links (/applications/<name>) fold into the master-detail split view,
 // which carries the selection in ?sel= so the list stays mounted.
@@ -169,6 +170,7 @@ export default function App() {
             <Route path="/storage" element={<Storage />} />
             <Route path="/actions" element={<Actions />} />
             <Route path="/scans" element={<Scans />} />
+            <Route path="/admin" element={<AdminCluster />} />
           </Route>
         </Routes>
       </DrawerProvider>

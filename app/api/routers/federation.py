@@ -40,6 +40,31 @@ def mint_token(req: MintRequest, actor: str = Depends(verify_auth), db: DBManage
     return {"token": token, "server_id": req.server_id}
 
 
+@router.get("/tokens")
+def list_tokens(_: str = Depends(verify_auth), db: DBManager = Depends(get_db)):
+    """List outstanding join tokens (for the Admin tab lifecycle UI). The token is shown
+    truncated — enough to identify + revoke, not to leak the full secret in a list view."""
+    out = []
+    for t in db.db.join_tokens.find({}, {"_id": 0}).sort("created_at", -1):
+        tok = t.get("token", "")
+        out.append({
+            "token": tok,
+            "token_preview": (tok[:6] + "…" + tok[-4:]) if len(tok) > 12 else tok,
+            "server_id": t.get("server_id"),
+            "created_at": t.get("created_at"),
+            "created_by": t.get("created_by"),
+        })
+    return {"tokens": out, "count": len(out)}
+
+
+@router.delete("/tokens/{token}")
+def revoke_token(token: str, _: str = Depends(verify_auth), db: DBManager = Depends(get_db)):
+    """Revoke a join token so it can no longer enroll a secondary (same token store the
+    installer's enroll validates against — revoking here closes that path everywhere)."""
+    res = db.db.join_tokens.delete_one({"token": token})
+    return {"ok": res.deleted_count > 0, "revoked": res.deleted_count}
+
+
 @router.get("/servers")
 def list_servers(_: str = Depends(verify_auth), db: DBManager = Depends(get_db)):
     servers = list(db.db.federation_servers.find({}, {"_id": 0}))

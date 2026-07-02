@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { RefreshCw, Search, TriangleAlert, CircleAlert, LogOut } from "lucide-react";
+import { RefreshCw, Search, TriangleAlert, CircleAlert, LogOut, Network } from "lucide-react";
 import { endpoints, clearToken } from "../api/client";
 import { cn } from "../lib/cn";
 import {
@@ -135,6 +135,14 @@ export default function Header() {
       </div>
 
       <ThemeSwitcher />
+
+      <button
+        onClick={() => navigate("/admin")}
+        title="Admin · Cluster"
+        className="p-1.5 rounded-md text-zinc-500 hover:text-accent-soft hover:bg-bg-elev transition"
+      >
+        <Network size={15} />
+      </button>
 
       <button
         onClick={async () => {

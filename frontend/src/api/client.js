@@ -79,6 +79,20 @@ export const endpoints = {
     api.post("/api/cluster/promote", { force }),
   clusterOverride: (value) =>
     api.post("/api/cluster/override", { value }),
+  // Admin / Cluster tab — role-transition matrix, enable toggle, evict, tokens, audit.
+  clusterEnable: (value) => api.post("/api/cluster/enable", { value }),
+  clusterToPrimary: (priority) => api.post("/api/cluster/to-primary", { priority }),
+  clusterJoin: (body) => api.post("/api/cluster/join", body),
+  clusterDemote: () => api.post("/api/cluster/demote"),
+  clusterToStandalone: (force, confirm_hostname) =>
+    api.post("/api/cluster/to-standalone", { force, confirm_hostname }),
+  clusterSetPriority: (priority) => api.post("/api/cluster/priority", { priority }),
+  clusterEvict: (node_id, confirm_hostname) =>
+    api.post("/api/cluster/evict", { node_id, confirm_hostname }),
+  clusterAudit: (limit = 100) => api.get("/api/cluster/audit", { params: { limit } }),
+  listFederationTokens: () => api.get("/api/federation/tokens"),
+  revokeFederationToken: (token) =>
+    api.delete(`/api/federation/tokens/${encodeURIComponent(token)}`),
 
   // AI layer
   aiStatus: () => api.get("/api/ai/status"),

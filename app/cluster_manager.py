@@ -30,7 +30,9 @@ def run_round(db, cfg, now=None, ping=_peer_health) -> dict:
     interval = cfg.federation.health_interval_seconds
 
     s = db.db.cluster.find_one({"_id": "self"}) or {}
-    roster = {n["node_id"]: n for n in db.db.cluster_nodes.find({}, {"_id": 0})}
+    tombstones = {t["node_id"] for t in db.db.cluster_tombstones.find({}, {"_id": 0, "node_id": 1})}
+    roster = {n["node_id"]: n for n in db.db.cluster_nodes.find({}, {"_id": 0})
+              if n["node_id"] not in tombstones}
 
     # --- gossip: pull every known peer's health, self-heal the roster ---------
     override_seen = False
@@ -40,14 +42,14 @@ def run_round(db, cfg, now=None, ping=_peer_health) -> dict:
             continue
         try:
             msg = ping(addr)
-            CC.merge_gossip(roster, msg, now)
+            CC.merge_gossip(roster, msg, now, tombstones=tombstones)  # evicted ids never return
             if msg.get("is_primary") and msg.get("override"):
                 override_seen = True
         except Exception:  # noqa: BLE001 — peer unreachable; leave its last_seen stale
             pass
-    # persist the refreshed roster
+    # persist the refreshed roster (never re-persist a tombstoned/evicted node)
     for nid, rec in roster.items():
-        if nid == node_id:
+        if nid == node_id or nid in tombstones:
             continue
         db.db.cluster_nodes.update_one({"node_id": nid}, {"$set": rec}, upsert=True)
 
@@ -98,3 +100,42 @@ async def loop(cfg, db, logger):
         except Exception as e:  # noqa: BLE001 — never let a blip kill the loop
             logger.warning("cluster round failed: %s", e)
         await asyncio.sleep(interval)
+
+
+# --------------------- runtime enable/disable (hot toggle) ------------------
+# The gossip loop can be started/stopped WITHOUT a container restart so the Admin tab's
+# cluster_enabled switch takes effect live. The task handle lives on app.state.
+
+
+def is_enabled(cfg, db) -> bool:
+    """Effective cluster_enabled: the config default OR a persisted runtime override
+    (cluster{self}.cluster_enabled), so an operator's in-UI enable survives a restart."""
+    s = db.db.cluster.find_one({"_id": "self"}) or {}
+    if s.get("cluster_enabled") is not None:
+        return bool(s.get("cluster_enabled"))
+    return bool(cfg.federation.cluster_enabled)
+
+
+def start_gossip(app, cfg, db, logger) -> bool:
+    """Start the gossip loop if not already running. Idempotent. Returns True if a task
+    is now running."""
+    task = getattr(app.state, "gossip_task", None)
+    if task and not task.done():
+        return True
+    app.state.gossip_task = asyncio.create_task(loop(cfg, db, logger))
+    logger.info("cluster gossip loop STARTED (health=%ss unreachable=%ss)",
+                cfg.federation.health_interval_seconds, cfg.federation.unreachable_after_seconds)
+    return True
+
+
+def stop_gossip(app, logger) -> bool:
+    """Cancel the gossip loop if running. Idempotent. Quiesces cleanly — the node keeps
+    its last-known role/roster in Mongo; it simply stops electing/gossiping."""
+    task = getattr(app.state, "gossip_task", None)
+    if task and not task.done():
+        task.cancel()
+        app.state.gossip_task = None
+        logger.info("cluster gossip loop STOPPED (quiesced)")
+        return True
+    app.state.gossip_task = None
+    return False

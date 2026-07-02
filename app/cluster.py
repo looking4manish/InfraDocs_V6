@@ -135,12 +135,18 @@ def evaluate_cluster(
 # ----------------------- roster gossip (self-heal) --------------------------
 
 
-def merge_gossip(roster: Dict[str, dict], msg: dict, now: datetime) -> Dict[str, dict]:
+def merge_gossip(roster: Dict[str, dict], msg: dict, now: datetime,
+                 tombstones: Optional[set] = None) -> Dict[str, dict]:
     """Fold one peer health message into the roster. Hearing from a node teaches us its
     priority + address directly, so a node that booted with an empty roster knows every
-    peer's priority after a single gossip round. Mutates and returns `roster`."""
+    peer's priority after a single gossip round. Mutates and returns `roster`.
+
+    `tombstones`: node_ids evicted by an operator. A tombstoned id is NEVER re-learned —
+    neither from a direct message nor a relayed peer — so an evicted ghost cannot creep
+    back into the roster and re-inflate the majority-guard denominator."""
+    tombstones = tombstones or set()
     nid = msg.get("node_id")
-    if not nid:
+    if not nid or nid in tombstones:
         return roster
     rec = roster.setdefault(nid, {"node_id": nid})
     if msg.get("priority") is not None:
@@ -154,7 +160,7 @@ def merge_gossip(roster: Dict[str, dict], msg: dict, now: datetime) -> Dict[str,
     # even between nodes that can't yet reach each other directly but share a neighbour).
     for peer in msg.get("peers", []) or []:
         pid = peer.get("node_id")
-        if not pid or pid == nid:
+        if not pid or pid == nid or pid in tombstones:
             continue
         prec = roster.setdefault(pid, {"node_id": pid})
         if peer.get("priority") is not None:
@@ -180,3 +186,43 @@ def current_leader_address(roster: Dict[str, dict]) -> Optional[str]:
         if rec.get("is_primary") and rec.get("address"):
             return rec["address"]
     return None
+
+
+# ----------------------- role-transition guards (pure) ----------------------
+# Each transition has a DIFFERENT hazard; these return (ok, reason) so the API can
+# refuse loudly and the UI can show WHY a control is blocked. No IO here.
+
+
+def fleet_size(roster_ids, tombstones=None) -> int:
+    """The majority-guard denominator: this node (1) + every roster id NOT tombstoned.
+    Evicting a node removes it from the roster AND tombstones it, so this shrinks — the
+    split-brain math must never keep counting a node the operator removed."""
+    tombstones = set(tombstones or ())
+    live = {i for i in roster_ids if i not in tombstones}
+    live.discard(None)
+    return 1 + len(live)
+
+
+def can_demote_primary(nodes: List[dict], self_id: str, now: datetime, *,
+                       override: bool = False, timeout: float = UNREACHABLE_AFTER_SECONDS) -> tuple:
+    """Primary → Secondary. Refuse if this node's override is pinned (clear it first),
+    or if NO other node is currently serving as a reachable primary — stepping down with
+    no live alternative would leave the cluster leaderless."""
+    if override:
+        return False, "override pinned on this node — clear override first"
+    reach = reachable_nodes(nodes, now, timeout)
+    alt = [n for n in reach if n.get("is_primary") and n["node_id"] != self_id]
+    if not alt:
+        return False, ("no alternative primary is reachable — demoting now would leave the "
+                       "cluster leaderless; promote another node first")
+    return True, None
+
+
+def can_go_standalone(roster: List[dict]) -> tuple:
+    """Primary → Standalone. Returns (ok, dependents, reason). Refuse (unless force) while
+    any secondary is still enrolled and redirecting here — going standalone orphans them."""
+    dependents = [n.get("node_id") for n in roster if n.get("node_id")]
+    if dependents:
+        return False, dependents, (f"{len(dependents)} secondary node(s) still enrolled and "
+                                    f"redirecting to this node: {dependents}")
+    return True, [], None
