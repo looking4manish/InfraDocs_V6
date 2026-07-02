@@ -157,6 +157,24 @@ class CompleteRequest(BaseModel):
     ai_model: Optional[str] = None
 
 
+def enroll_secondary(db: DBManager, node_id: str, primary_url: str, join_token: str,
+                     advertise_url: str, priority: int) -> dict:
+    """Shared secondary-enroll used by BOTH the installer path (/api/setup/complete) and
+    the Admin tab (/api/cluster/join), so the two can NEVER drift. Runs the bidirectional
+    reachability handshake against the primary (the canonical enroll API); on success,
+    persists this node's cluster self-record as a secondary. Returns {ok, directions, reason}."""
+    from app import federation as F
+    result = F.enroll_with_primary(primary_url, advertise_url, join_token, node_id, priority)
+    if result.get("ok"):
+        db.db.cluster.update_one(
+            {"_id": "self"},
+            {"$set": {"node_id": node_id, "priority": int(priority), "address": advertise_url,
+                      "is_primary": False, "override": False}},
+            upsert=True,
+        )
+    return result
+
+
 @router.post("/complete")
 def complete(req: CompleteRequest, actor: str = Depends(verify_auth), db: DBManager = Depends(get_db)):
     node_id = _server_id()
@@ -169,30 +187,23 @@ def complete(req: CompleteRequest, actor: str = Depends(verify_auth), db: DBMana
                 status_code=400,
                 detail="secondary needs primary_url, join_token, advertise_url, and a priority (1-99)",
             )
-        from app import federation as F
-        result = F.enroll_with_primary(
-            req.primary_url, req.advertise_url, req.join_token, node_id, req.priority,
-        )
+        result = enroll_secondary(db, node_id, req.primary_url, req.join_token,
+                                  req.advertise_url, req.priority)
         if not result.get("ok"):
-            d = result.get("directions", {})
             raise HTTPException(
                 status_code=400,
-                detail={
-                    "message": "enrollment refused",
-                    "directions": d,
-                    "reason": result.get("reason"),
-                },
+                detail={"message": "enrollment refused",
+                        "directions": result.get("directions", {}),
+                        "reason": result.get("reason")},
             )
-
-    # Persist this node's cluster self-record (its own Mongo — no shared DB).
-    is_primary = req.role in ("primary", "standalone")
-    db.db.cluster.update_one(
-        {"_id": "self"},
-        {"$set": {"node_id": node_id, "priority": priority, "address": req.advertise_url,
-                  "is_primary": is_primary, "override": False}},
-        upsert=True,
-    )
-    if is_primary:
+    else:
+        # primary / standalone: this node serves directly (its own cluster self-record).
+        db.db.cluster.update_one(
+            {"_id": "self"},
+            {"$set": {"node_id": node_id, "priority": priority, "address": req.advertise_url,
+                      "is_primary": True, "override": False}},
+            upsert=True,
+        )
         db.db.settings.update_one({"_id": "app"}, {"$set": {"primary_node": node_id}}, upsert=True)
 
     patch = {

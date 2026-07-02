@@ -30,16 +30,16 @@ async def lifespan(app: FastAPI):
     db.create_indexes()
     _auth.seed_default_admin(db, cfg.auth.username)
     logger.info(f"API started for server '{cfg.server.id}'")
-    gossip = None
-    if cfg.federation.cluster_enabled:
-        gossip = asyncio.create_task(_cluster.loop(cfg, db, logger))
-        logger.info("cluster gossip loop started (health=%ss unreachable=%ss)",
-                    cfg.federation.health_interval_seconds, cfg.federation.unreachable_after_seconds)
+    app.state.gossip_task = None
+    app.state.cluster_logger = logger
+    # Effective flag = config default OR a persisted runtime override, so an operator's
+    # in-UI enable survives a restart. The Admin tab starts/stops this task live.
+    if _cluster.is_enabled(cfg, db):
+        _cluster.start_gossip(app, cfg, db, logger)
     try:
         yield
     finally:
-        if gossip:
-            gossip.cancel()
+        _cluster.stop_gossip(app, logger)
         db.close()
         logger.info("API shutdown complete")
 
