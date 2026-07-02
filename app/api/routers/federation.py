@@ -16,6 +16,7 @@ from pydantic import BaseModel
 
 from app import cluster as CC
 from app import federation as F
+from app.cli_install import normalize_url
 from app.api.dependencies import get_config, get_db, verify_auth
 from app.core.config_loader import Config
 from app.core.db_manager import DBManager
@@ -179,32 +180,33 @@ def enroll(req: EnrollRequest, db: DBManager = Depends(get_db)):
         raise HTTPException(status_code=409,
                             detail=f"priority {req.priority} already in use (by '{taken_by}') — pick a free one")
 
+    secondary_url = normalize_url(req.secondary_url)  # portless -> :PORT before probe + store
     secondary_to_primary = True  # this request reached us
     primary_to_secondary = False
     reason = None
     try:
-        pong = F.ping_node(req.secondary_url)
+        pong = F.ping_node(secondary_url)
         if pong.get("server_id") and pong.get("server_id") != req.server_id:
-            reason = (f"reached {req.secondary_url} but it identifies as "
+            reason = (f"primary→secondary: reached {secondary_url} but it identifies as "
                       f"'{pong.get('server_id')}', not '{req.server_id}'")
         else:
             primary_to_secondary = True
     except Exception as e:  # noqa: BLE001
-        reason = f"primary could not reach the secondary at {req.secondary_url}: {e}"
+        reason = "primary→secondary: " + F.probe_failure_reason(secondary_url, e)
 
     ok = secondary_to_primary and primary_to_secondary
     if ok:
         now = datetime.now(timezone.utc)
         db.db.federation_servers.update_one(
             {"server_id": req.server_id},
-            {"$set": {"server_id": req.server_id, "url": req.secondary_url, "enrolled_at": now}},
+            {"$set": {"server_id": req.server_id, "url": secondary_url, "enrolled_at": now}},
             upsert=True,
         )
         # Add to the authoritative roster with its priority + address.
         db.db.cluster_nodes.update_one(
             {"node_id": req.server_id},
             {"$set": {"node_id": req.server_id, "priority": req.priority,
-                      "address": req.secondary_url, "is_primary": False, "last_seen": now}},
+                      "address": secondary_url, "is_primary": False, "last_seen": now}},
             upsert=True,
         )
     return {

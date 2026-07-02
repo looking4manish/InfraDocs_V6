@@ -11,6 +11,32 @@ import json
 import urllib.error
 import urllib.request
 from typing import List, Optional
+from urllib.parse import urlsplit
+
+from app.cli_install import normalize_url
+
+
+def probe_failure_reason(url, exc) -> str:
+    """Translate a reachability-probe exception into a NAMED, human reason so the UI
+    never sees a raw 'tlsv1 alert internal error'."""
+    msg = str(exc).lower()
+    u = url if "://" in url else "http://" + url
+    try:
+        parts = urlsplit(u); has_port = parts.port is not None; scheme = parts.scheme
+    except ValueError:
+        has_port, scheme = True, "http"
+    if any(t in msg for t in ("tlsv1", "ssl", "wrong version number", "unknown protocol",
+                              "alert internal error", "record layer", "certificate", "eof occurred")):
+        if (not has_port) or scheme == "https":
+            return (f"missing-port/wrong-scheme: {url} has no explicit port (or uses https), so the "
+                    f"probe hit TLS on 443 — store an explicit http://ADDR:PORT (e.g. :8081)")
+        return f"wrong-scheme: {url} answered TLS where plain http was expected — check scheme/port"
+    if any(t in msg for t in ("refused", "timed out", "timeout", "no route", "unreachable",
+                              "could not connect", "reset by peer", "name or service not known",
+                              "temporary failure in name resolution")):
+        return (f"unreachable: {url} did not respond (firewall or wrong address; if this is a public "
+                f"IP, open the port in the cloud firewall) — firewall-likely")
+    return f"unreachable: could not reach {url} ({type(exc).__name__})"
 
 
 def _post_json(url: str, body: dict, headers: Optional[dict] = None, timeout: int = 25) -> dict:
@@ -51,6 +77,8 @@ def enroll_with_primary(
     duplicate priority). A primary we can't even reach is reported as
     secondary->primary = False (rather than raising), so the wizard shows a clean verdict.
     """
+    primary_url = normalize_url(primary_url)
+    advertise_url = normalize_url(advertise_url)
     base = primary_url.rstrip("/")
     try:
         res = _post_json(
@@ -75,7 +103,7 @@ def enroll_with_primary(
         return {
             "ok": False,
             "directions": {"secondary_to_primary": False, "primary_to_secondary": None},
-            "reason": f"could not reach the primary at {base}: {e}",
+            "reason": "secondary→primary unreachable: " + probe_failure_reason(base, e),
         }
     return res
 

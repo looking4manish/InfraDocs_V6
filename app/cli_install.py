@@ -164,6 +164,14 @@ def _is_loopback(ip: str) -> bool:
     except ValueError:
         return False
 
+def _is_public(ip: str) -> bool:
+    """A globally-routable IPv4 (a real public address), not private/CGNAT/link-local."""
+    try:
+        a = ipaddress.ip_address(ip)
+        return a.is_global and not a.is_private
+    except ValueError:
+        return False
+
 
 def detect_addresses(web_port, runner=subprocess.run) -> list:
     """Peer-reachable candidate addresses for THIS node, ordered best-first (tailscale,
@@ -191,11 +199,35 @@ def detect_addresses(web_port, runner=subprocess.run) -> list:
             continue
         if _in_cgnat(ip):
             add(ip, "tailscale", "tailscale")
+        elif _is_public(ip):
+            add(ip, f"public IP — only if :{port} open in cloud firewall", "public")
         else:
             add(ip, f"lan / {iface}" if iface else "lan", "lan")
-    rank = {"tailscale": 0, "lan": 1}
+    rank = {"tailscale": 0, "lan": 1, "public": 2}
     out.sort(key=lambda c: rank.get(c["kind"], 9))  # stable: insertion order kept within a kind
     return out
+
+
+def normalize_url(url, default_port: int = 8081) -> str:
+    """Ensure a reachable address carries an EXPLICIT port. A portless http://host is
+    normalized to http://host:<default_port> before it is stored or probed — otherwise
+    the bidirectional enroll probe hits 80/443 and fails with a misleading TLS alert."""
+    if not url:
+        return url
+    from urllib.parse import urlsplit, urlunsplit
+    u = url.strip()
+    if "://" not in u:
+        u = "http://" + u
+    parts = urlsplit(u)
+    host = parts.hostname
+    if host and parts.port is None:
+        netloc = f"[{host}]" if ":" in host else host
+        netloc = f"{netloc}:{default_port}"
+        if parts.username:
+            auth = parts.username + (f":{parts.password}" if parts.password else "")
+            netloc = f"{auth}@{netloc}"
+        parts = parts._replace(netloc=netloc)
+    return urlunsplit(parts)
 
 
 # ----------------------- config rendering -----------------------------------
@@ -313,9 +345,12 @@ def _cli(argv=None) -> int:
             print(f"{c['url']}\t{c['label']}\t{c['kind']}")
         return 0
     if args.cmd == "complete":
-        cfg = {"role": args.role, "server_name": args.server_name, "advertise_url": args.advertise_url}
+        adv = normalize_url(args.advertise_url) if args.advertise_url else args.advertise_url
+        cfg = {"role": args.role, "server_name": args.server_name, "advertise_url": adv}
         if args.role == "secondary":
-            cfg.update({"priority": args.priority, "primary_url": args.primary_url, "join_token": args.join_token})
+            cfg.update({"priority": args.priority,
+                        "primary_url": normalize_url(args.primary_url) if args.primary_url else args.primary_url,
+                        "join_token": args.join_token})
         body = build_complete_body(cfg)
         ok, reason, directions = complete_setup(args.api, body, (args.user, args.password))
         if ok:

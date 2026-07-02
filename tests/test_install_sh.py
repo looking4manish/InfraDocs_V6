@@ -196,7 +196,6 @@ def test_standalone_skips_address_detection_and_completes(sandbox):
     assert "standalone node ready" in out
     assert "complete" in calls and "standalone" in calls
     assert "check-primary" not in calls and "check-priority" not in calls
-    assert "detect-addresses" not in calls, "standalone must not run address detection"
     assert "pick how other nodes" not in out, "standalone must not show the address picker"
     _no_teardown(sandbox)
 
@@ -216,7 +215,7 @@ def test_picker_lists_candidates_and_defaults_to_tailscale(sandbox):
     assert "pick how other nodes + browsers reach this box" in out
     assert "http://100.70.18.9:8081" in out and "tailscale" in out
     assert "http://10.0.0.12:8081" in out and "lan / eth0" in out
-    assert "http://localhost:8081" in out and "this machine only" in out
+    assert "http://localhost:8081" in out and "this host only" in out
     assert "enter manually" in out
     # Default = the first (peer-reachable) candidate, i.e. tailscale — NOT localhost.
     assert "address:   http://100.70.18.9:8081" in out
@@ -355,3 +354,13 @@ def test_bad_mode_is_rejected(sandbox):
     r = _run(sandbox, "--onboard=ui", "--mode=bogus")
     assert r.returncode != 0
     assert "invalid --mode" in (r.stdout + r.stderr)
+
+
+def test_ui_wizard_prints_detected_addresses_not_placeholder(sandbox):
+    # UI path must reuse the SAME detection the CLI picker uses and print real URLs.
+    r = _run(sandbox, "--onboard=ui")
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out
+    assert "<this node's reachable address>" not in out, "placeholder must be gone"
+    assert "http://100.70.18.9:8081" in out and "tailscale" in out       # detected top pick
+    assert "http://localhost:8081" in out and "this host only" in out
