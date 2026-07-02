@@ -43,6 +43,9 @@ BRANCH="${INFRADOCS_BRANCH:-main}"
 # CLI path: primary | secondary | standalone | "" (ask). Flags win over env.
 ONBOARD="${INFRADOCS_ONBOARD:-}"
 ROLE_OVERRIDE="${INFRADOCS_ROLE:-}"
+# Install mode: detached (default) = clone once + sever origin (your own copy);
+# normal = stay synced to origin/$BRANCH (git reset --hard each run). "" => ask.
+MODE="${INFRADOCS_MODE:-}"
 # Scripted reachable address: --advertise-url / INFRADOCS_ADVERTISE_URL bypasses the picker.
 ADVERTISE_OVERRIDE="${INFRADOCS_ADVERTISE_URL:-}"
 for arg in "$@"; do
@@ -51,6 +54,10 @@ for arg in "$@"; do
     --onboard)         echo "use --onboard=cli or --onboard=ui" >&2; exit 1 ;;
     --role=*)          ROLE_OVERRIDE="${arg#*=}" ;;
     --role)            echo "use --role=primary|secondary|standalone" >&2; exit 1 ;;
+    --mode=*)          MODE="${arg#*=}" ;;
+    --mode)            echo "use --mode=detached or --mode=normal" >&2; exit 1 ;;
+    --detached)        MODE=detached ;;
+    --normal)          MODE=normal ;;
     --advertise-url=*) ADVERTISE_OVERRIDE="${arg#*=}" ;;
     --advertise-url)   echo "use --advertise-url=http://HOST-OR-IP:PORT" >&2; exit 1 ;;
   esac
@@ -181,17 +188,47 @@ docker info >/dev/null 2>&1 || die "cannot talk to the Docker daemon (is it runn
 ok "git, curl, docker + compose present; Docker daemon reachable"
 
 # --- 2. fetch the repo ---------------------------------------------------
+# Resolve install mode (detached is the default). Detached downloads the code ONCE then
+# severs the link to origin, so this becomes YOUR local copy and re-runs never overwrite
+# your edits. Normal keeps it synced to origin/$BRANCH (hard-reset on every run).
+case "$MODE" in
+  ""|detached|normal) : ;;
+  *) die "invalid --mode='$MODE' (use detached or normal)" ;;
+esac
+step "Install mode"
+if [[ -z "$MODE" ]]; then
+  a="$(ask "Install mode — [D]etached (your own local copy, no link to origin) or [N]ormal (stay synced to origin/$BRANCH)?" "D")"
+  case "$a" in
+    N|n|normal|NORMAL) MODE=normal ;;
+    *)                 MODE=detached ;;
+  esac
+fi
+ok "mode = $MODE"
+
 step "Fetch InfraDocs ($BRANCH)"
-if [[ -d "$DEPLOY_DIR/.git" ]]; then
-  git -C "$DEPLOY_DIR" fetch --depth 1 origin "$BRANCH" >/dev/null 2>&1 \
-    && git -C "$DEPLOY_DIR" checkout -q "$BRANCH" \
-    && git -C "$DEPLOY_DIR" reset --hard -q "origin/$BRANCH" \
-    || die "failed to update the existing checkout at $DEPLOY_DIR"
-  ok "updated $DEPLOY_DIR"
+if [[ "$MODE" == "normal" ]]; then
+  if [[ -d "$DEPLOY_DIR/.git" ]]; then
+    git -C "$DEPLOY_DIR" fetch --depth 1 origin "$BRANCH" >/dev/null 2>&1 \
+      && git -C "$DEPLOY_DIR" checkout -q "$BRANCH" \
+      && git -C "$DEPLOY_DIR" reset --hard -q "origin/$BRANCH" \
+      || die "failed to update the existing checkout at $DEPLOY_DIR"
+    ok "updated $DEPLOY_DIR (synced to origin/$BRANCH)"
+  else
+    git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$DEPLOY_DIR" >/dev/null 2>&1 \
+      || die "git clone failed ($REPO_URL)"
+    ok "cloned $DEPLOY_DIR (tracking origin/$BRANCH)"
+  fi
 else
-  git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$DEPLOY_DIR" >/dev/null 2>&1 \
-    || die "git clone failed ($REPO_URL)"
-  ok "cloned to $DEPLOY_DIR"
+  # detached: one-time download, then cut the cord to origin so this copy is the operator's.
+  if [[ -d "$DEPLOY_DIR/.git" ]]; then
+    git -C "$DEPLOY_DIR" remote remove origin >/dev/null 2>&1 || true
+    ok "using existing checkout at $DEPLOY_DIR — detached (your local changes are kept, not re-pulled)"
+  else
+    git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$DEPLOY_DIR" >/dev/null 2>&1 \
+      || die "git clone failed ($REPO_URL)"
+    git -C "$DEPLOY_DIR" remote remove origin >/dev/null 2>&1 || true
+    ok "cloned $DEPLOY_DIR and severed origin — this copy is yours to modify (installer won't overwrite it)"
+  fi
 fi
 cd "$DEPLOY_DIR"
 PY="python3"; [[ -x "$DEPLOY_DIR/venv/bin/python" ]] && PY="$DEPLOY_DIR/venv/bin/python"

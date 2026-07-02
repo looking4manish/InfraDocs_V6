@@ -124,6 +124,7 @@ def sandbox(tmp_path):
     env["PATH"] = f"{bindir}:{env['PATH']}"
     env["HOME"] = str(tmp_path)
     env["INFRADOCS_DIR"] = str(deploy_dir)
+    env["INFRADOCS_MODE"] = "detached"  # skip the mode prompt in onboarding-flow tests
     env["INFRADOCS_SERVER_ID"] = "ci-node"  # deterministic; avoids the node-id prompt
     env["INFRADOCS_ADVERTISE_URL"] = ""      # don't let a real env leak the picker bypass
     # Detection defaults: a tailscale addr + a LAN addr.
@@ -323,3 +324,34 @@ def test_bad_role_value_is_rejected_before_building(sandbox):
     assert r.returncode != 0
     assert "invalid --role" in (r.stdout + r.stderr)
     assert "compose" not in _calls(sandbox)
+
+
+# ----------------------- install mode: detached (default) vs normal ---------
+
+def test_mode_detached_severs_origin(sandbox):
+    r = _run(sandbox, "--onboard=ui", "--mode=detached")
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out
+    assert "mode = detached" in out
+    assert "detached" in out and ("not re-pulled" in out or "severed origin" in out or "yours to modify" in out)
+
+
+def test_mode_normal_stays_synced_to_origin(sandbox):
+    r = _run(sandbox, "--onboard=ui", "--mode=normal")
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out
+    assert "mode = normal" in out and "synced to origin" in out
+
+
+def test_mode_prompt_defaults_to_detached(sandbox):
+    # no --mode and INFRADOCS_MODE cleared -> prompt; closed stdin picks the [D]efault.
+    r = _run(sandbox, "--onboard=ui", extra_env={"INFRADOCS_MODE": ""})
+    out = r.stdout + r.stderr
+    assert r.returncode == 0, out
+    assert "mode = detached" in out
+
+
+def test_bad_mode_is_rejected(sandbox):
+    r = _run(sandbox, "--onboard=ui", "--mode=bogus")
+    assert r.returncode != 0
+    assert "invalid --mode" in (r.stdout + r.stderr)
