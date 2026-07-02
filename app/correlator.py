@@ -27,10 +27,12 @@ All existing fields and their shapes are unchanged.
 from __future__ import annotations
 
 import logging
+import os
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
 
+from app.core.hostpath import to_read_path
 from app.scanners.docker import _dir_size_bytes
 from app.storage_registry import _is_unsizable_bind
 
@@ -93,11 +95,13 @@ def _group(assets: Iterable[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
 
 
 def _project_dirs(projects_root: str, direct_roots: Optional[List[str]] = None) -> Dict[str, str]:
-    """name -> full path for every direct child of projects_root and each
-    direct root (/opt/<app>, /srv/<app>, …). These are the install-style roots
-    where one folder == one application, so each surfaces as a project bucket
-    even with no running evidence yet. Broader marker-hunt roots are NOT walked
-    here — those apps surface via their assets' `project` tag instead."""
+    """name -> full path for every direct child of projects_root and each direct
+    root (/opt/<app>, /srv/<app>, …). Fallback ONLY: production passes the
+    ProjectDetector's already-discovered, host-mount-aware `project_dirs` into
+    correlate() instead — this bare walk is not /host-aware, so inside the
+    container it would see the container's own empty /opt, /srv, … and miss every
+    app installed elsewhere on the host. Kept for native use + tests that don't
+    supply project_dirs."""
     out: Dict[str, str] = {}
     for root_str in [projects_root, *(direct_roots or [])]:
         root = Path(root_str)
@@ -187,12 +191,21 @@ def correlate(
     server_id: str,
     projects_root: str,
     direct_roots: Optional[List[str]] = None,
+    project_dirs: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
-    """Run correlation and return one app document per project + one System app."""
+    """Run correlation and return one app document per project + one System app.
+
+    `project_dirs` (name -> real host path) is the set of applications the
+    ProjectDetector discovered across ALL configured roots (host-mount-aware).
+    When supplied (production does), a bucket is materialized for every one of
+    them so an app installed ANYWHERE on disk shows up even with no running
+    evidence yet. When omitted (native/tests), it falls back to a bare walk of
+    projects_root + direct_roots."""
     by_cat = _group(assets)
     apps: Dict[str, Dict[str, Any]] = {}
 
-    project_dirs = _project_dirs(projects_root, direct_roots)
+    if project_dirs is None:
+        project_dirs = _project_dirs(projects_root, direct_roots)
     for pname, ppath in project_dirs.items():
         apps[pname] = _empty_app(
             pname,
@@ -515,27 +528,34 @@ def correlate(
         )
 
     # ---- Pass 10: project_dir size for project apps -----------------------
+    # Size the app's OWN discovered directory wherever it lives (/opt/x, /srv/y,
+    # …), not just projects_root/<name>. `source` is the real host path the
+    # detector found; read/size it through the /host mount when containerized.
     for app_name, app in apps.items():
         if app["type"] != "project":
             continue
-        proj_dir = Path(projects_root) / app_name
-        if proj_dir.is_dir():
-            app["project_dir"] = str(proj_dir)
-            app["project_dir_size_bytes"] = _dir_size_bytes(str(proj_dir))
-            if str(proj_dir) not in app["storage_paths"]:
-                app["storage_paths"].insert(0, str(proj_dir))
+        real_dir = app.get("source") or str(Path(projects_root) / app_name)
+        read_dir = to_read_path(real_dir)
+        if os.path.isdir(read_dir):
+            app["project_dir"] = real_dir
+            app["project_dir_size_bytes"] = _dir_size_bytes(read_dir)
+            if real_dir not in app["storage_paths"]:
+                app["storage_paths"].insert(0, real_dir)
 
     # ---- Pass 11: totals + dedup + resilience ------------------------------
     for app in apps.values():
         total = app["project_dir_size_bytes"]
+        counted_dir = app.get("project_dir")
         for v in app["volumes"]:
             total += v.get("size_bytes") or 0
         for src in app["storage_paths"]:
+            if counted_dir and src == counted_dir:
+                continue  # the app's own dir — already counted via project_dir_size_bytes
             if src.startswith(projects_root):
-                continue  # already counted via project_dir_size_bytes
+                continue  # under the classic root — counted (or a sibling project)
             if _is_unsizable_bind(src):
                 continue  # system/observability mount (/, /proc, …) — not app data
-            total += _dir_size_bytes(src)
+            total += _dir_size_bytes(to_read_path(src))
         app["total_size_bytes"] = total
 
         for k in (
