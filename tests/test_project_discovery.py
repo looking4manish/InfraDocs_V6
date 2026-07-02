@@ -227,3 +227,123 @@ def test_absent_root_is_skipped_quietly(tmp_path, caplog):
         )
     assert pd.list_projects() == []
     assert not any(r.levelname == "WARNING" for r in caplog.records)
+
+
+# ---- deny-list walk from `/` (the V7 regression: apps under any top-level dir) ----
+
+
+def test_walk_from_root_finds_app_under_arbitrary_top_level_dir(tmp_path, monkeypatch):
+    """The exact UAT miss: an app under a NON-allowlisted top-level dir (/data/<app>)
+    must be discovered by a default walk from `/`, with its real host path — no
+    per-box override, /data never named anywhere."""
+    host = tmp_path / "host"
+    (host / "data" / "mxh" / ".git").mkdir(parents=True)          # marker app under /data
+    (host / "data" / "acme" / "docker-compose.yml").parent.mkdir(parents=True)
+    (host / "data" / "acme" / "docker-compose.yml").write_text("services: {}")
+    (host / "opt" / "grafana").mkdir(parents=True)                # marker-less install root
+    monkeypatch.setattr("app.core.project_detector._HOST_ROOT", str(host))
+
+    pd = ProjectDetector(
+        projects_root="/home/msinha/projects",
+        scan_roots=["/"],                    # deny-list walk from root
+        direct_roots=["/opt", "/srv", "/var/www"],
+        scan_depth=4,
+    )
+    paths = pd.project_paths()
+    assert paths.get("mxh") == "/data/mxh"   # discovered at its REAL host path
+    assert "acme" in paths                    # compose app under /data too
+    assert paths.get("grafana") == "/opt/grafana"  # direct-root install still works
+
+
+def test_walk_from_root_prunes_excluded_trees(tmp_path, monkeypatch):
+    """A marker inside an EXCLUDED tree (e.g. /usr/lib) must NOT become an app; a
+    marker just outside it must. Exclusion is a deny-list, applied on the real path."""
+    host = tmp_path / "host"
+    (host / "usr" / "lib" / "somepkg" / ".git").mkdir(parents=True)   # excluded
+    (host / "usr" / "local" / "realapp" / ".git").mkdir(parents=True)  # NOT excluded
+    monkeypatch.setattr("app.core.project_detector._HOST_ROOT", str(host))
+
+    pd = ProjectDetector(
+        projects_root="/nonexistent",
+        scan_roots=["/"],
+        scan_depth=5,
+        exclude_paths=["/usr/lib", "/usr/bin", "/usr/sbin", "/usr/share"],
+    )
+    projs = pd.list_projects()
+    assert "somepkg" not in projs           # pruned: lives under excluded /usr/lib
+    assert "realapp" in projs               # /usr/local is not excluded
+    # the exclusion set is the built-in pseudo-dirs unioned with the config list
+    assert "/usr/lib" in pd.exclude_paths and "/proc" in pd.exclude_paths
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses filesystem permissions")
+def test_configured_exclusion_prunes_even_permissioned_dir(tmp_path, monkeypatch):
+    """An excluded path is skipped before we even try to read it."""
+    host = tmp_path / "host"
+    (host / "var" / "log" / "app" / ".git").mkdir(parents=True)  # /var/log excluded
+    (host / "data" / "keep" / ".git").mkdir(parents=True)
+    monkeypatch.setattr("app.core.project_detector._HOST_ROOT", str(host))
+    pd = ProjectDetector(
+        projects_root="/nope", scan_roots=["/"], scan_depth=4,
+        exclude_paths=["/var/log", "/var/cache"],
+    )
+    assert "keep" in pd.list_projects()
+    assert "app" not in pd.list_projects()
+
+
+def test_filesystem_root_unreadable_via_host_mount_fails_loud(tmp_path, monkeypatch, caplog):
+    """If `/` can't be read through the /host mount (mount missing/broken), log a
+    LOUD, named ERROR — a misconfigured mount must be obvious, not silent."""
+    # HOST_ROOT points at a path with no readable root, so _read_base('/') is None.
+    monkeypatch.setattr("app.core.project_detector._HOST_ROOT", str(tmp_path / "missing_host"))
+    with caplog.at_level("ERROR", logger="app.core.project_detector"):
+        pd = ProjectDetector(projects_root="/nonexistent", scan_roots=["/"])
+    assert pd.list_projects() == []
+    err = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert err and "/host mount" in err[0].getMessage()
+    assert "'/'" in err[0].getMessage()
+
+
+def test_preflight_logs_resolved_plan(tmp_path, caplog):
+    """Preflight logs the resolved roots, exclusion set, and depth/timeout caps."""
+    (tmp_path / "app").mkdir()
+    with caplog.at_level("INFO", logger="app.core.project_detector"):
+        ProjectDetector(
+            projects_root=str(tmp_path), scan_roots=[str(tmp_path)],
+            scan_depth=4, scan_timeout_seconds=90, exclude_paths=["/boot"],
+        )
+    plan = [r.getMessage() for r in caplog.records if "discovery plan" in r.getMessage()]
+    assert plan, "a preflight discovery-plan line must be logged"
+    msg = plan[0]
+    assert "scan_depth=4" in msg and "timeout=90s" in msg and "/boot" in msg
+
+
+# ---- config defaults + env overrides ----
+
+
+def test_config_default_scan_root_is_filesystem_root():
+    """Out-of-box default is a walk from `/` with a non-empty deny-list — not an
+    allow-list of blessed dirs."""
+    from app.core.config_loader import (
+        DEFAULT_SCAN_ROOTS, DEFAULT_SCAN_EXCLUSIONS, load_config,
+    )
+    assert DEFAULT_SCAN_ROOTS == ["/"]
+    assert "/proc" in DEFAULT_SCAN_EXCLUSIONS and "/boot" in DEFAULT_SCAN_EXCLUSIONS
+    cfg = load_config(str(ROOT / "config.yml"))
+    assert cfg.paths.scan_roots == ["/"]
+    assert cfg.paths.scan_exclusions and "/proc" in cfg.paths.scan_exclusions
+    assert "/usr/lib" in cfg.paths.scan_exclusions and "/boot" in cfg.paths.scan_exclusions
+
+
+def test_scan_root_and_exclusion_env_overrides(tmp_path, monkeypatch):
+    """INFRADOCS_SCAN_ROOTS / INFRADOCS_SCAN_EXCLUSIONS widen/narrow without code edits."""
+    import shutil
+    from app.core.config_loader import load_config
+
+    cfgfile = tmp_path / "config.yml"
+    shutil.copy(ROOT / "config.yml", cfgfile)
+    monkeypatch.setenv("INFRADOCS_SCAN_ROOTS", "/data,/opt")
+    monkeypatch.setenv("INFRADOCS_SCAN_EXCLUSIONS", "/proc,/boot")
+    cfg = load_config(str(cfgfile))
+    assert cfg.paths.scan_roots == ["/data", "/opt"]
+    assert cfg.paths.scan_exclusions == ["/proc", "/boot"]

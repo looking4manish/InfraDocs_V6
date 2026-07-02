@@ -49,6 +49,7 @@ def _run_scan_job(scan_id: str, cfg: Config):
         direct_roots=cfg.paths.direct_roots,
         scan_depth=cfg.paths.scan_depth,
         scan_timeout_seconds=cfg.paths.scan_timeout_seconds,
+        exclude_paths=cfg.paths.scan_exclusions,
         discovered=discover_docker_projects(),
         logger=get_scan_logger("api"),
     )
