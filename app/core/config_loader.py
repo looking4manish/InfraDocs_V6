@@ -36,25 +36,47 @@ class MongoDBConfig(BaseModel):
         return value
 
 
-# Sensible full-disk defaults so discovery covers "anywhere an app can live",
-# not just one home-relative folder — used when config.yml omits these keys.
+# Discovery is a DENY-LIST WALK FROM `/`, not an allow-list of blessed dirs — so an
+# app installed under ANY top-level directory (incl. /data/<app>) is found without
+# being named. `scan_roots` defaults to the filesystem root; the exclusion set below
+# does the filtering. `direct_roots` still names a few install roots whose direct
+# children are apps even without a marker. Used when config.yml omits these keys.
+DEFAULT_SCAN_ROOTS: List[str] = ["/"]
 DEFAULT_DIRECT_ROOTS: List[str] = ["/opt", "/srv", "/var/www"]
-DEFAULT_SCAN_ROOTS: List[str] = ["/opt", "/srv", "/usr/local", "/var/www", "/home", "/etc"]
+# Top-level / system trees a walk from `/` must NOT churn through: pseudo-fs, boot,
+# volatile caches/logs, image + package stores, and the OS binary/library trees.
+# Deny-list (prune these), NOT an allow-list — /data, /opt, /srv, /home, /etc,
+# /var/www, /usr/local, /mnt, /media all stay discoverable. Non-local mounts
+# (nfs/tmpfs/overlay/…) are pruned separately by fstype at scan time.
+DEFAULT_SCAN_EXCLUSIONS: List[str] = [
+    "/proc", "/sys", "/dev", "/run",              # pseudo / virtual
+    "/boot", "/lost+found",                        # boot + fs artifacts
+    "/tmp", "/var/tmp", "/var/cache", "/var/log", "/var/spool",  # volatile
+    "/var/lib/docker", "/var/lib/containerd", "/var/lib/snapd", "/snap",  # image/pkg stores
+    "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32",       # OS binaries/libs
+    "/usr/bin", "/usr/sbin", "/usr/lib", "/usr/lib32", "/usr/lib64",
+    "/usr/libx32", "/usr/libexec", "/usr/share", "/usr/include",
+    "/usr/src", "/usr/games",                      # (…/usr/local stays discoverable)
+]
 
 
 class PathsConfig(BaseModel):
     projects_root: str
-    # Extra roots whose DIRECT children are each an application (install layout:
-    # /opt/<app>, /srv/<app>, /var/www/<site>). Direct discovery, like projects_root.
+    # Install roots whose DIRECT children are each an application even without a
+    # marker (/opt/<app>, /srv/<app>, /var/www/<site>). Complements the walk from `/`.
     direct_roots: Optional[List[str]] = None
-    # Broader roots to recursively HUNT for scattered projects
-    # (marker-based: docker-compose.yml / .git). Marker-only so /home/<user> and
-    # /etc/<config> don't each become an "app".
+    # Roots to recursively HUNT for apps by marker (docker-compose.yml / .git).
+    # Defaults to ["/"] — a deny-list walk of the whole disk (see scan_exclusions).
     scan_roots: Optional[List[str]] = None
-    scan_depth: int = 2
-    # Wall-clock cap (seconds) for the whole filesystem discovery pass so a
-    # full-disk scan can never hang the pipeline. <=0 disables the cap.
-    scan_timeout_seconds: int = 120
+    # Absolute host paths pruned during the walk (deny-list). Defaults to
+    # DEFAULT_SCAN_EXCLUSIONS. Built-in pseudo-fs guards apply regardless.
+    scan_exclusions: Optional[List[str]] = None
+    # How deep to descend under each root. From `/`, an app is one level deeper than
+    # from a named root (/data/<app> is depth 2), so the default is a touch higher.
+    scan_depth: int = 4
+    # Wall-clock cap (seconds) for the whole filesystem discovery pass so a walk
+    # from `/` can never hang the pipeline. <=0 disables the cap.
+    scan_timeout_seconds: int = 90
     data_root: str
     logs_dir: str = "logs"
     artifacts_dir: str = "artifacts"
@@ -131,12 +153,17 @@ def load_config(config_path: str = "config.yml") -> Config:
         direct_env = os.environ.get("INFRADOCS_DIRECT_ROOTS")
         if direct_env is not None:
             paths["direct_roots"] = [r.strip() for r in direct_env.split(",") if r.strip()]
-        # Full-disk defaults when neither config.yml nor env supplied a value, so
-        # discovery can never silently collapse back to the single projects_root.
+        excl_env = os.environ.get("INFRADOCS_SCAN_EXCLUSIONS")
+        if excl_env is not None:
+            paths["scan_exclusions"] = [r.strip() for r in excl_env.split(",") if r.strip()]
+        # Deny-list-from-`/` defaults when neither config.yml nor env supplied a
+        # value, so discovery can never silently collapse back to an allow-list.
         if paths.get("scan_roots") is None:
             paths["scan_roots"] = list(DEFAULT_SCAN_ROOTS)
         if paths.get("direct_roots") is None:
             paths["direct_roots"] = list(DEFAULT_DIRECT_ROOTS)
+        if paths.get("scan_exclusions") is None:
+            paths["scan_exclusions"] = list(DEFAULT_SCAN_EXCLUSIONS)
 
     return Config(**raw)
 

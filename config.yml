@@ -20,31 +20,67 @@ mongodb:
 paths:
   # Dedicated root: every direct subfolder is treated as an application (classic).
   projects_root: /home/msinha/projects
-  # Full-disk discovery so an app installed ANYWHERE shows up — not just ~/projects.
-  # direct_roots: install-style roots where each direct child is an app
-  #   (/opt/<app>, /srv/<app>, /var/www/<site>).
-  # scan_roots:   broader roots recursively hunted for project markers
-  #   (docker-compose.yml / .git) only — so /home/<user> and /etc don't each
-  #   become an "app". Docker- and systemd-registered services are covered by
-  #   their own scanners on top of this.
+  # Discovery is a DENY-LIST WALK FROM `/` (read via the container /host mount), not
+  # an allow-list of blessed dirs — so an app installed under ANY top-level directory
+  # (e.g. /data/<app>) is found without being named. In a container this reads the
+  # host disk through the read-only /host bind.
+  #
+  # direct_roots: install roots whose DIRECT children are each an app even without a
+  #   marker (/opt/<app>, /srv/<app>, /var/www/<site>). Complements the walk.
+  # scan_roots:  roots recursively hunted for app markers (docker-compose.yml / .git).
+  #   Default "/" = the whole disk; scan_exclusions filters the noise.
+  # scan_exclusions: absolute host paths pruned during the walk (deny-list) — pseudo
+  #   filesystems, boot, volatile caches/logs, image/package stores, and OS binary/
+  #   library trees. /data, /opt, /srv, /home, /etc, /var/www, /usr/local, /mnt,
+  #   /media all stay discoverable. Non-local mounts (nfs/tmpfs/overlay/…) are pruned
+  #   automatically by fstype. Docker/systemd services are covered by their own scanners.
   # Override per-box without editing this file via INFRADOCS_DIRECT_ROOTS /
-  # INFRADOCS_SCAN_ROOTS (comma-separated).
+  # INFRADOCS_SCAN_ROOTS / INFRADOCS_SCAN_EXCLUSIONS (comma-separated).
   direct_roots:
     - /opt
     - /srv
     - /var/www
   scan_roots:
-    - /opt
-    - /srv
-    - /usr/local
-    - /var/www
-    - /home
-    - /etc
-  # How deep the marker hunt descends under each scan/direct root.
-  scan_depth: 3
-  # Wall-clock cap (seconds) for the whole filesystem discovery pass; a full-disk
-  # scan can never hang the pipeline. Set <=0 to disable.
-  scan_timeout_seconds: 120
+    - /
+  scan_exclusions:
+    - /proc
+    - /sys
+    - /dev
+    - /run
+    - /boot
+    - /lost+found
+    - /tmp
+    - /var/tmp
+    - /var/cache
+    - /var/log
+    - /var/spool
+    - /var/lib/docker
+    - /var/lib/containerd
+    - /var/lib/snapd
+    - /snap
+    - /bin
+    - /sbin
+    - /lib
+    - /lib32
+    - /lib64
+    - /libx32
+    - /usr/bin
+    - /usr/sbin
+    - /usr/lib
+    - /usr/lib32
+    - /usr/lib64
+    - /usr/libx32
+    - /usr/libexec
+    - /usr/share
+    - /usr/include
+    - /usr/src
+    - /usr/games
+  # How deep to descend under each root. From `/`, an app is one level deeper than
+  # from a named root (/data/<app> is depth 2), so this is a touch higher than before.
+  scan_depth: 4
+  # Wall-clock cap (seconds) for the whole filesystem discovery pass; a walk from `/`
+  # can never hang the pipeline. Set <=0 to disable.
+  scan_timeout_seconds: 90
   data_root: /data/infradocs
   logs_dir: logs
   artifacts_dir: artifacts

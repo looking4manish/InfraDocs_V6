@@ -161,6 +161,7 @@ class ProjectDetector:
         direct_roots: Optional[List[str]] = None,
         scan_depth: int = 2,
         scan_timeout_seconds: Optional[int] = None,
+        exclude_paths: Optional[List[str]] = None,
         discovered: Optional[Dict[str, str]] = None,
         logger: Optional[logging.Logger] = None,
     ):
@@ -169,10 +170,17 @@ class ProjectDetector:
         # layout: /opt/<app>, /srv/<app>, /var/www/<site>). Configurable so this
         # can't silently regress to one hardcoded directory.
         self.direct_roots: List[Path] = [Path(r) for r in (direct_roots or [])]
-        # Broader roots to recursively HUNT for scattered projects by marker only
-        # (docker-compose.yml / .git) — so /home/<user> and /etc don't become "apps".
+        # Roots to recursively HUNT for apps by marker only (docker-compose.yml /
+        # .git). Defaults to the filesystem root — a deny-list walk of the whole
+        # disk — so an app under ANY top-level dir (/data/<app>, …) is found.
         self.scan_roots: List[Path] = [Path(r) for r in (scan_roots or [])]
         self.scan_depth = scan_depth
+        # Exclusion set (deny-list) — real host paths pruned during the walk. The
+        # built-in pseudo-fs guards always apply; config exclusions layer on top.
+        # `None` (native/tests) keeps just the built-ins so guard behaviour is stable.
+        self.exclude_paths: Set[str] = set(_PSEUDO_DIRS) | {
+            str(Path(p)) for p in (exclude_paths or [])
+        }
         self._log = logger or _log
 
         self._projects: Dict[str, Path] = {}  # name -> resolved dir
@@ -183,11 +191,24 @@ class ProjectDetector:
         # A non-positive timeout means "no wall-clock cap".
         self._deadline = (time.monotonic() + timeout) if timeout and timeout > 0 else None
 
+        # Preflight: log the resolved plan (timestamped via the scan logger) so a
+        # misconfigured mount / over-broad exclusion is obvious in the scan log.
+        self._log.info(
+            "project_detector: discovery plan — direct_roots=%s scan_roots=%s "
+            "scan_depth=%s (ceiling=%s) timeout=%ss max_dirs=%s host_root=%s "
+            "exclusions(%d)=%s",
+            [str(r) for r in [self.projects_root, *self.direct_roots]],
+            [str(r) for r in self.scan_roots],
+            scan_depth, _MAX_DEPTH, timeout, _MAX_DIRS_VISITED,
+            _HOST_ROOT or "(native)",
+            len(self.exclude_paths), sorted(self.exclude_paths),
+        )
+
         # Direct roots: every direct subfolder is a project (classic) + nested markers.
         for r in [self.projects_root, *self.direct_roots]:
             self._discover_root(r, scan_depth, direct=True)
-        # Scan roots: ONLY marker-bearing dirs — don't turn every subfolder of a
-        # broad root (e.g. /home) into a project.
+        # Scan roots: ONLY marker-bearing dirs — a walk from `/` must not turn every
+        # top-level dir into a project; the exclusion set filters the noise.
         for r in self.scan_roots:
             self._discover_root(r, scan_depth, direct=False)
         for name, path in (discovered or {}).items():
@@ -225,12 +246,13 @@ class ProjectDetector:
         return False
 
     def _is_skippable(self, real_path: Path, name: str) -> bool:
-        """A dir we must not enter: noise dir, hidden, pseudo-fs, or a mount whose
-        fstype is network/tmpfs/overlay/etc. Checked on the REAL (host) path."""
+        """A dir we must not enter: noise dir, hidden, an excluded path (built-in
+        pseudo-fs + configured deny-list), or a mount whose fstype is
+        network/tmpfs/overlay/etc. Checked on the REAL (host) path."""
         if name in _SKIP_DIRS or name.startswith("."):
             return True
         rp = str(real_path)
-        if rp in _PSEUDO_DIRS or rp in self._skip_mounts:
+        if rp in self.exclude_paths or rp in self._skip_mounts:
             return True
         return False
 
@@ -250,11 +272,22 @@ class ProjectDetector:
         # unreadable" (a real problem — log LOUDLY with a named reason, don't crash).
         base = _read_base(root)   # read directly or via the container /host mount
         if base is None:
-            self._log.info("project_detector: scan root absent, skipping: %s", root)
+            # The filesystem root being unreadable means the /host bind is missing/
+            # broken — fail LOUD with a named reason (no host apps can be found).
+            if str(root) == os.sep:
+                self._log.error(
+                    "project_detector: filesystem root '/' is NOT readable via the "
+                    "/host mount (INFRADOCS_HOST_ROOT=%r) — the container is likely "
+                    "missing the '/:/host:ro' bind; NO host applications can be "
+                    "discovered until this is fixed",
+                    _HOST_ROOT or "(native)",
+                )
+            else:
+                self._log.info("project_detector: scan root absent, skipping: %s", root)
             return
         real_root = _to_real(base)
-        if str(real_root) in _PSEUDO_DIRS or str(real_root) in self._skip_mounts:
-            self._log.info("project_detector: scan root is a pseudo/skipped mount, skipping: %s", root)
+        if str(real_root) in self.exclude_paths or str(real_root) in self._skip_mounts:
+            self._log.info("project_detector: scan root is excluded/skipped mount, skipping: %s", root)
             return
         try:
             entries = list(base.iterdir())

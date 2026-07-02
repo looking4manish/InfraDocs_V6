@@ -127,6 +127,33 @@ def test_fallback_bare_walk_when_no_project_dirs(tmp_path):
     assert "alpha" in apps and "beta" in apps
 
 
+def test_data_app_surfaces_end_to_end_from_root_walk(tmp_path, monkeypatch):
+    """V7 regression: an app under /data (non-allowlisted) is discovered by the
+    default walk from `/` and surfaces as an application bucket with its real host
+    path — no per-box INFRADOCS_* override, /data never named."""
+    import app.core.project_detector as pdmod
+    from app.core.config_loader import DEFAULT_SCAN_ROOTS, DEFAULT_SCAN_EXCLUSIONS
+
+    host = tmp_path / "host"
+    (host / "data" / "mxh" / ".git").mkdir(parents=True)
+    monkeypatch.setattr(pdmod, "_HOST_ROOT", str(host))
+
+    pd = pdmod.ProjectDetector(
+        projects_root="/home/msinha/projects",
+        scan_roots=DEFAULT_SCAN_ROOTS,            # ["/"]
+        direct_roots=["/opt", "/srv", "/var/www"],
+        scan_depth=4,
+        exclude_paths=DEFAULT_SCAN_EXCLUSIONS,
+    )
+    apps = _by_name(correlate(
+        [], server_id="test",
+        projects_root="/home/msinha/projects",
+        project_dirs=pd.project_paths(),
+    ))
+    assert "mxh" in apps, "app under /data must surface as a bucket via the / walk"
+    assert apps["mxh"]["source"] == "/data/mxh"   # real host path, not /host-prefixed
+
+
 def test_detector_project_paths_feed_correlator_end_to_end(tmp_path):
     """The real wiring: ProjectDetector discovers across roots, its project_paths()
     seed the correlator — an /opt app with no assets shows up."""

@@ -38,6 +38,9 @@ class ComposeScanner(BaseScanner):
         roots = pd.discovery_roots()
         depth = min(getattr(pd, "scan_depth", 3), _MAX_DEPTH)
         self._skip_mounts = _skip_mountpoints()
+        # Share the detector's deny-list (built-in pseudo-fs + configured exclusions)
+        # so the compose walk from `/` prunes the same system trees.
+        self._exclude_paths = getattr(pd, "exclude_paths", set(_PSEUDO_DIRS))
         self._deadline = time.monotonic() + DEFAULT_SCAN_TIMEOUT
 
         assets: List[Dict[str, Any]] = []
@@ -83,7 +86,7 @@ class ComposeScanner(BaseScanner):
                     if (
                         entry.name in _SKIP_DIRS
                         or entry.name.startswith(".")
-                        or str(real) in _PSEUDO_DIRS
+                        or str(real) in self._exclude_paths
                         or str(real) in self._skip_mounts
                     ):
                         continue
