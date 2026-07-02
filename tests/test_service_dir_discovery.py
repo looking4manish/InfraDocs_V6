@@ -89,6 +89,46 @@ def test_systemd_service_execstart_promotes_stripping_bin_venv():
     assert pd.project_paths().get("mdb-discovery") == "/home/data/project/mdb-discovery"
 
 
+def test_multi_service_app_collapses_to_one_project(monkeypatch):
+    # The real UAT case: two units for one app, one running from the app root and one
+    # from a subdir. The pre-pass must promote the shallowest dir so BOTH attribute to
+    # a single `mdb-discovery` — no bogus `backend` project.
+    pd = _pd()
+    shows = {
+        "mdb-discovery-proxy.service": {
+            "FragmentPath": "/etc/systemd/system/mdb-discovery-proxy.service",
+            "WorkingDirectory": "/home/data/project/mdb-discovery",
+            "ExecStart": "{ path=/home/msinha/.local/bin/uvicorn ; argv[]=... }",
+        },
+        "mdb-discovery-backend.service": {
+            "FragmentPath": "/etc/systemd/system/mdb-discovery-backend.service",
+            "WorkingDirectory": "/home/data/project/mdb-discovery/backend",
+            "ExecStart": "{ path=/home/data/project/mdb-discovery/backend/.venv/bin/uvicorn ; argv[]=... }",
+        },
+    }
+    sc = SystemdScanner(server_id="oci", project_detector=pd)
+    sc._show_cache = {}
+    sc._is_enabled = lambda n: True
+    monkeypatch.setattr(sc, "_list_unit_file_names",
+                        lambda t: list(shows) if t == "service" else [])
+    monkeypatch.setattr(sc, "_systemctl_show", lambda n: shows.get(n, {}))
+    # run only the promotion pre-pass (skip the real `systemctl list-units` subprocess)
+    monkeypatch.setattr("app.scanners.systemd.subprocess.run",
+                        lambda *a, **k: type("R", (), {"stdout": "", "returncode": 0})())
+    sc._promote_service_dirs()
+
+    a_proxy = sc._build_unit_asset("service", "systemd_service", "mdb-discovery-proxy.service",
+                                   load_state="loaded", active_state="active", sub_state="running",
+                                   show=shows["mdb-discovery-proxy.service"])
+    a_back = sc._build_unit_asset("service", "systemd_service", "mdb-discovery-backend.service",
+                                  load_state="loaded", active_state="active", sub_state="running",
+                                  show=shows["mdb-discovery-backend.service"])
+    assert a_proxy["project"] == "mdb-discovery"
+    assert a_back["project"] == "mdb-discovery"          # NOT "backend"
+    assert "backend" not in pd.list_projects()
+    assert pd.project_paths()["mdb-discovery"] == "/home/data/project/mdb-discovery"
+
+
 def test_promoted_service_dir_becomes_a_correlator_bucket():
     pd = _pd()
     asset = _unit_asset(pd, "mdb-discovery.service", {

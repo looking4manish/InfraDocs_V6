@@ -385,19 +385,28 @@ class ProjectDetector:
         (/usr, /var, /etc, …) don't become projects. Returns the project name, or
         'System' if the path is reserved/excluded. The dir need not exist in this
         process (it's a real host path); the correlator sizes it via the /host mount."""
-        if not path_str or not path_str.startswith("/"):
+        if not self.is_promotable_dir(path_str):
             return "System"
         p = Path(path_str)
-        parts = p.parts
-        # Need at least /<top>/<app>; never promote the root or a bare top-level dir.
-        if len(parts) < 3 or parts[1] in _SYSTEM_TOP_DIRS:
-            return "System"
+        self._add(p.name, p)
+        return p.name if p.name in self._projects else "System"
+
+    def is_promotable_dir(self, path_str: str) -> bool:
+        """Whether a service/container dir is eligible to become a project: an absolute
+        path at least /<top>/<app> deep, whose top-level is not the OS (_SYSTEM_TOP_DIRS)
+        and which is not under an excluded path / skipped mount. Callers filter candidate
+        dirs with this BEFORE choosing the shallowest, so a reserved dir like '/' can't
+        swallow every real candidate as its 'ancestor'."""
+        if not path_str or not path_str.startswith("/"):
+            return False
+        p = Path(path_str)
+        if len(p.parts) < 3 or p.parts[1] in _SYSTEM_TOP_DIRS:
+            return False
         for anc in [p, *p.parents]:
             s = str(anc)
             if s in self.exclude_paths or s in self._skip_mounts:
-                return "System"
-        self._add(p.name, p)
-        return p.name if p.name in self._projects else "System"
+                return False
+        return True
 
     def get_project_from_service_name(self, service_name: str, unit_file_path: str = "") -> str:
         if unit_file_path:

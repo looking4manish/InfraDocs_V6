@@ -64,7 +64,63 @@ class SystemdScanner(BaseScanner):
         return "systemd"
 
     def scan(self) -> List[Dict[str, Any]]:
+        self._show_cache: Dict[str, Dict[str, str]] = {}
+        # Pre-pass: promote each app's dir ONCE, using the shallowest dir across all
+        # units, so a multi-service app (e.g. mdb-discovery-proxy in /…/mdb-discovery
+        # and mdb-discovery-backend in /…/mdb-discovery/backend) collapses to a single
+        # `mdb-discovery` project instead of also spawning a bogus `backend`.
+        self._promote_service_dirs()
         return self._scan_units("service") + self._scan_units("timer")
+
+    def _candidate_dir(self, show: Dict[str, str]) -> str:
+        """The app dir a service runs from: WorkingDirectory if set, else the ExecStart
+        binary's dir walked up past generic bin/venv/… wrappers. '' if neither is usable."""
+        wd = show.get("WorkingDirectory", "")
+        if wd.startswith("/"):
+            return wd
+        m = re.search(r"path=(/\S+)", show.get("ExecStart", ""))
+        if m:
+            d = Path(m.group(1)).parent
+            while d.name in _GENERIC_BIN_DIRS and len(d.parts) > 2:
+                d = d.parent
+            return str(d)
+        return ""
+
+    def _promote_service_dirs(self) -> None:
+        """Register the shallowest app dir per install area so all of an app's services
+        attribute to one project. Reserved/system dirs are dropped by the detector."""
+        names = set(self._list_unit_file_names("service"))
+        try:
+            r = subprocess.run(
+                ["systemctl", "list-units", "--type=service", "--all", "--no-pager", "--plain"],
+                capture_output=True, text=True, timeout=15, check=False,
+            )
+            for line in r.stdout.splitlines():
+                parts = line.split(None, 4)
+                if parts and parts[0].endswith(".service"):
+                    names.add(parts[0])
+        except Exception:  # noqa: BLE001 — list-units is best-effort here
+            pass
+        # Only PROMOTABLE dirs are candidates — filter first so a reserved dir (e.g. a
+        # service with WorkingDirectory=/) can't count as everyone's ancestor and drop
+        # every real candidate in the shallowest-wins reduce below.
+        cands = []
+        for n in names:
+            d = self._candidate_dir(self._systemctl_show(n))
+            if d and self.project_detector.is_promotable_dir(d):
+                cands.append(d)
+        # Keep only dirs with no other candidate as a proper ancestor (shallowest wins).
+        for d in dict.fromkeys(cands):
+            dp = Path(d)
+            if any(Path(c) in dp.parents for c in cands if c != d):
+                continue
+            # Already inside a project the detector found (e.g. the app's real root was
+            # discovered by its .git/compose marker, and this service runs from a subdir
+            # like /data/mxh/backend)? Then don't mint a component-named project —
+            # longest-prefix attribution will map the service to that app.
+            if self.project_detector.get_project_from_path(d) != "System":
+                continue
+            self.project_detector.register_project_from_dir(d)
 
     def _scan_units(self, unit_type: str) -> List[Dict[str, Any]]:
         category = f"systemd_{unit_type}"
@@ -152,21 +208,16 @@ class SystemdScanner(BaseScanner):
         # /home/data/project/<app>. ExecStart's binary path only matches (no promote,
         # to avoid naming a project after a stray /bin dir). Absolute paths only —
         # systemd quoting prefixes like `!/root` are not real paths.
-        if project == "System":
-            working_dir = show.get("WorkingDirectory", "")
-            if working_dir.startswith("/"):
-                project = self.project_detector.register_project_from_dir(working_dir)
-        if project == "System":
-            exec_start = show.get("ExecStart", "")
-            m = re.search(r"path=(/\S+)", exec_start)
-            if m:
-                # Walk up from the binary past generic bin/venv/… wrappers to the app
-                # dir, then promote it (register applies the deny-list, so a binary in
-                # /usr/bin still resolves to System).
-                d = Path(m.group(1)).parent
-                while d.name in _GENERIC_BIN_DIRS and len(d.parts) > 2:
-                    d = d.parent
-                project = self.project_detector.register_project_from_dir(str(d))
+        # The pre-pass (_promote_service_dirs) already registered the shallowest app dir,
+        # so MATCH it here (longest-prefix) — both /…/mdb-discovery and /…/mdb-discovery/
+        # backend resolve to the one `mdb-discovery` project. If unmatched (a lone service
+        # the pre-pass didn't cover, or _build_unit_asset called directly), promote its
+        # own dir; register applies the deny-list so /usr/bin etc. stay System.
+        cand = self._candidate_dir(show)
+        if project == "System" and cand:
+            project = self.project_detector.get_project_from_path(cand)
+            if project == "System":
+                project = self.project_detector.register_project_from_dir(cand)
 
         metadata = {
             "load_state": load_state,
@@ -205,6 +256,9 @@ class SystemdScanner(BaseScanner):
         )
 
     def _systemctl_show(self, unit_name: str) -> Dict[str, str]:
+        cache = getattr(self, "_show_cache", None)
+        if cache is not None and unit_name in cache:
+            return cache[unit_name]
         try:
             result = subprocess.run(
                 [
@@ -219,9 +273,12 @@ class SystemdScanner(BaseScanner):
                 timeout=5,
                 check=False,
             )
-            return _parse_show_output(result.stdout)
+            parsed = _parse_show_output(result.stdout)
         except Exception:
-            return {}
+            parsed = {}
+        if cache is not None:
+            cache[unit_name] = parsed
+        return parsed
 
     def _is_enabled(self, unit_name: str) -> bool:
         try:
