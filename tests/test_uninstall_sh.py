@@ -53,18 +53,7 @@ def sandbox(tmp_path):
     log_stub("systemctl")
     log_stub("groupdel")
     log_stub("tailscale")
-    # apt-get: log; simulate package removal by deleting the purged CLI stubs so a
-    # later `command -v docker/tailscale` reflects the removal.
-    _write_exe(
-        bindir / "apt-get",
-        "#!/usr/bin/env bash\n"
-        f'printf "apt-get %s\\n" "$*" >> "{calls}"\n'
-        'b="$(dirname "$(readlink -f "$0")")"\n'
-        'for a in "$@"; do case "$a" in\n'
-        '  docker*|containerd*) rm -f "$b/docker" ;;\n'
-        '  tailscale*) rm -f "$b/tailscale" ;;\n'
-        'esac; done\nexit 0\n',
-    )
+    log_stub("apt-get")  # log only — never touch real packages
     # sudo: run the (stubbed) command WITHOUT privilege — real system paths survive.
     _write_exe(bindir / "sudo", '#!/usr/bin/env bash\nexec "$@"\n')
 
@@ -149,11 +138,13 @@ def test_keep_config_and_keep_data_are_respected(sandbox):
 
 
 def test_idempotent_when_nothing_installed(sandbox):
-    _run(sandbox, "--yes")
-    r = _run(sandbox, "--yes")
+    _run(sandbox, "--yes")            # first pass removes everything
+    r = _run(sandbox, "--yes")        # second pass: honestly reports nothing to do
     out = r.stdout + r.stderr
     assert r.returncode == 0, out
-    assert "clean" in out
+    assert "not installed here" in out and "nothing to remove" in out
+    # it must NOT claim to have removed things that weren't there
+    assert "removed built images" not in out
 
 
 def test_refuses_catastrophic_deploy_dir(sandbox):
