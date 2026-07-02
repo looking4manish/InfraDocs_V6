@@ -7,6 +7,10 @@ from typing import Any, Dict, List, Optional
 
 from app.scanners.base import BaseScanner
 
+# Trailing components of an ExecStart binary path that are wrappers, not the app dir —
+# walk past them to find the real project root (…/mdb-discovery/venv/bin/python → …/mdb-discovery).
+_GENERIC_BIN_DIRS = {"bin", "sbin", "venv", ".venv", "dist", "build", "scripts", ".local", "libexec"}
+
 
 # Properties we ask `systemctl show` for in one shot — cheaper than N calls.
 SYSTEMD_SHOW_PROPS = [
@@ -140,18 +144,29 @@ class SystemdScanner(BaseScanner):
         project = self.project_detector.get_project_from_service_name(
             unit_name, unit_file_path
         )
-        # Resolve via WorkingDirectory / ExecStart if the unit file is in
-        # /etc/systemd but the binary lives in a project dir. Only absolute
-        # paths — systemd quoting prefixes like `!/root` are not real paths.
+        # Resolve via WorkingDirectory / ExecStart if the unit file is in /etc/systemd
+        # but the app lives elsewhere. A unit's WorkingDirectory is proof the dir is a
+        # real app, so PROMOTE it to a project (register_project_from_dir applies the
+        # deny-list + reserved-top guard) rather than only matching existing ones — this
+        # is what surfaces a systemd-tracked app under a non-marker path like
+        # /home/data/project/<app>. ExecStart's binary path only matches (no promote,
+        # to avoid naming a project after a stray /bin dir). Absolute paths only —
+        # systemd quoting prefixes like `!/root` are not real paths.
         if project == "System":
             working_dir = show.get("WorkingDirectory", "")
             if working_dir.startswith("/"):
-                project = self.project_detector.get_project_from_path(working_dir)
+                project = self.project_detector.register_project_from_dir(working_dir)
         if project == "System":
             exec_start = show.get("ExecStart", "")
             m = re.search(r"path=(/\S+)", exec_start)
             if m:
-                project = self.project_detector.get_project_from_path(m.group(1))
+                # Walk up from the binary past generic bin/venv/… wrappers to the app
+                # dir, then promote it (register applies the deny-list, so a binary in
+                # /usr/bin still resolves to System).
+                d = Path(m.group(1)).parent
+                while d.name in _GENERIC_BIN_DIRS and len(d.parts) > 2:
+                    d = d.parent
+                project = self.project_detector.register_project_from_dir(str(d))
 
         metadata = {
             "load_state": load_state,

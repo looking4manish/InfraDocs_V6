@@ -59,6 +59,15 @@ _PSEUDO_DIRS = {
     "/snap", "/sys/fs/cgroup",
 }
 
+# Top-level dirs that are the OS, not an app-install area. A service/container whose
+# working dir sits under one of these is NOT promoted to a project (its markerless dir
+# would just be system noise). /opt, /srv, /home, /data, /mnt, /media, /root, and any
+# custom top-level stay eligible — so an app under /home/data/project/<app> still counts.
+_SYSTEM_TOP_DIRS = {
+    "usr", "bin", "sbin", "lib", "lib32", "lib64", "libx32", "boot",
+    "proc", "sys", "dev", "run", "snap", "var", "etc", "tmp", "lost+found",
+}
+
 # Filesystem types whose mountpoints we refuse to descend into: network shares,
 # ephemeral/in-memory FSes, and image/overlay FSes. Keeps a full-disk walk from
 # wandering onto an NFS mount or blowing up on a squashfs snap.
@@ -366,6 +375,29 @@ class ProjectDetector:
             if name in parts:
                 return name
         return "System"
+
+    def register_project_from_dir(self, path_str: str) -> str:
+        """Promote a directory a service/container is KNOWN to run from (a systemd
+        WorkingDirectory, a docker working_dir, …) to a project — so an app the system
+        actively tracks surfaces even without a .git/compose marker and even when it
+        lives outside the direct roots (e.g. /home/data/project/<app>). Applies the
+        same deny-list plus a reserved-top-level guard so OS/system service dirs
+        (/usr, /var, /etc, …) don't become projects. Returns the project name, or
+        'System' if the path is reserved/excluded. The dir need not exist in this
+        process (it's a real host path); the correlator sizes it via the /host mount."""
+        if not path_str or not path_str.startswith("/"):
+            return "System"
+        p = Path(path_str)
+        parts = p.parts
+        # Need at least /<top>/<app>; never promote the root or a bare top-level dir.
+        if len(parts) < 3 or parts[1] in _SYSTEM_TOP_DIRS:
+            return "System"
+        for anc in [p, *p.parents]:
+            s = str(anc)
+            if s in self.exclude_paths or s in self._skip_mounts:
+                return "System"
+        self._add(p.name, p)
+        return p.name if p.name in self._projects else "System"
 
     def get_project_from_service_name(self, service_name: str, unit_file_path: str = "") -> str:
         if unit_file_path:
