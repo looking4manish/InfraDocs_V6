@@ -164,6 +164,9 @@ def enroll_secondary(db: DBManager, node_id: str, primary_url: str, join_token: 
     reachability handshake against the primary (the canonical enroll API); on success,
     persists this node's cluster self-record as a secondary. Returns {ok, directions, reason}."""
     from app import federation as F
+    from app.cli_install import normalize_url
+    advertise_url = normalize_url(advertise_url)
+    primary_url = normalize_url(primary_url)
     result = F.enroll_with_primary(primary_url, advertise_url, join_token, node_id, priority)
     if result.get("ok"):
         db.db.cluster.update_one(

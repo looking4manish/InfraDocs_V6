@@ -95,30 +95,54 @@ ask_required() {
 # menu/prompts go to stderr so $(...) capture stays clean. Returns 1 on 'q' / EOF (the
 # caller leaves the healthy stack up). A scripted override and the no-candidates fallback
 # both route to the same field as the old free-text prompt.
-pick_advertise_url() {
-  if [[ -n "$ADVERTISE_OVERRIDE" ]]; then printf '%s' "$ADVERTISE_OVERRIDE"; return 0; fi
-
-  local urls=() labels=() line url label kind
+# Render the SHARED detected address candidates (cli_install detect-addresses) to stdout in
+# spec order: tailscale/LAN first, then localhost ("this host only"), then any public IPv4
+# (caveated). Used by BOTH the CLI picker and the UI-wizard message so they show the SAME set.
+print_address_candidates() {
+  local line url label kind peer=() pub=() e u l any=""
   while IFS= read -r line; do
     [[ -z "$line" ]] && continue
     IFS=$'\t' read -r url label kind <<<"$line"
-    urls+=("$url"); labels+=("$label")
+    if [[ "$kind" == "public" ]]; then pub+=("$url|$label"); else peer+=("$url|$label"); fi
+    any=1
+  done < <("${HELP[@]}" detect-addresses --web-port "$WEB_PORT" 2>/dev/null || true)
+  for e in ${peer[@]+"${peer[@]}"}; do u="${e%%|*}"; l="${e#*|}"; printf "     %-30s (%s)\n" "$u" "$l"; done
+  printf "     %-30s (%s)\n" "http://localhost:${WEB_PORT}" "this host only"
+  for e in ${pub[@]+"${pub[@]}"};  do u="${e%%|*}"; l="${e#*|}"; printf "     %-30s (%s)\n" "$u" "$l"; done
+  [[ -z "$any" ]] && printf "     (no address auto-detected — open http://localhost:%s here, or type one)\n" "$WEB_PORT"
+  return 0
+}
+
+pick_advertise_url() {
+  if [[ -n "$ADVERTISE_OVERRIDE" ]]; then printf '%s' "$ADVERTISE_OVERRIDE"; return 0; fi
+
+  local line url label kind
+  local peer_u=() peer_l=() pub_u=() pub_l=()
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    IFS=$'\t' read -r url label kind <<<"$line"
+    if [[ "$kind" == "public" ]]; then pub_u+=("$url"); pub_l+=("$label"); else peer_u+=("$url"); peer_l+=("$label"); fi
   done < <("${HELP[@]}" detect-addresses --web-port "$WEB_PORT" 2>/dev/null || true)
 
-  # Nothing peer-usable detected → fall back to the manual free-text prompt (old behaviour).
-  if (( ${#urls[@]} == 0 )); then
+  # Nothing peer-usable detected → manual free-text prompt (old behaviour).
+  if (( ${#peer_u[@]} + ${#pub_u[@]} == 0 )); then
     ask_required "This node's reachable address — what other nodes + browsers use (e.g. http://HOST-OR-IP:${WEB_PORT})"
     return $?
   fi
 
-  local n_det=${#urls[@]} localhost_num=$(( ${#urls[@]} + 1 )) manual_num=$(( ${#urls[@]} + 2 )) i choice
+  # spec order: tailscale/LAN, localhost, public — localhost/public are never the [1] default.
+  local urls=() labels=()
+  urls+=(${peer_u[@]+"${peer_u[@]}"}); labels+=(${peer_l[@]+"${peer_l[@]}"})
+  urls+=("http://localhost:${WEB_PORT}"); labels+=("this host only")
+  urls+=(${pub_u[@]+"${pub_u[@]}"});  labels+=(${pub_l[@]+"${pub_l[@]}"})
+
+  local n=${#urls[@]} manual_num=$(( ${#urls[@]} + 1 )) i choice
   while :; do
     {
       echo "This node's reachable address — pick how other nodes + browsers reach this box:"
       for i in "${!urls[@]}"; do
-        printf "    %d) %-26s (%s)\n" "$(( i + 1 ))" "${urls[$i]}" "${labels[$i]}"
+        printf "    %d) %-30s (%s)\n" "$(( i + 1 ))" "${urls[$i]}" "${labels[$i]}"
       done
-      printf "    %d) %-26s (%s)\n" "$localhost_num" "http://localhost:${WEB_PORT}" "this machine only"
       printf "    %d) enter manually\n" "$manual_num"
     } >&2
     if ! read -rp "  Choose [1] (or 'q' to finish later): " choice; then return 1; fi
@@ -127,10 +151,8 @@ pick_advertise_url() {
       q|Q)        return 1 ;;
       *[!0-9]*|"") err "enter a number 1-${manual_num}, or 'q' to finish later"; continue ;;
     esac
-    if (( choice >= 1 && choice <= n_det )); then
+    if (( choice >= 1 && choice <= n )); then
       printf '%s' "${urls[$(( choice - 1 ))]}"; return 0
-    elif (( choice == localhost_num )); then
-      printf '%s' "http://localhost:${WEB_PORT}"; return 0
     elif (( choice == manual_num )); then
       ask_required "Enter this node's reachable address (e.g. http://HOST-OR-IP:${WEB_PORT})"
       return $?
@@ -162,7 +184,8 @@ onboard_quit() {
   echo "    • CLI:  re-run the installer and onboard again —"
   echo "            (cd \"$DEPLOY_DIR\" && bash install.sh --onboard=cli)"
   echo "    • UI:   open the setup wizard in a browser —"
-  echo "            on this host: $LOCAL_WEB   ·   from elsewhere: http://<this node's reachable address>:${WEB_PORT}"
+  echo "            on this host: $LOCAL_WEB   ·   from another machine, use an address it can reach:"
+  print_address_candidates
   echo "            log in admin / $ADMIN_PW (change it) and complete the wizard."
   echo "  Manage: (cd \"$DEPLOY_DIR/deploy/docker\" && docker compose --env-file .env ps|logs -f|down)"
   exit 0
@@ -329,7 +352,8 @@ if [[ "$ONBOARD" == "cli" ]]; then
     echo "  node id:   $SERVER_ID"
     echo ""
     echo "  Open the dashboard at: $LOCAL_WEB   (login: admin / $ADMIN_PW — change it)"
-    echo "  From another machine:  http://<this node's reachable address>:${WEB_PORT}"
+    echo "  From another machine, use an address it can reach:"
+    print_address_candidates
     echo "  Manage: (cd \"$DEPLOY_DIR/deploy/docker\" && docker compose --env-file .env ps|logs -f|down)"
   else
     # primary / secondary — a clustered node genuinely needs a reachable address. Every
@@ -414,7 +438,8 @@ else
    OPEN THE SETUP WIZARD
   ====================================================================
    On this host:    $LOCAL_WEB
-   From elsewhere:  http://<this node's reachable address>:${WEB_PORT}
+   From another machine, open the address it can reach (top pick first):
+$(print_address_candidates)
 ${CONFIGURED_LINE:+$CONFIGURED_LINE
 }
    Login: admin / $ADMIN_PW  (change it), then the wizard collects role /
