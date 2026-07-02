@@ -17,6 +17,21 @@ def _to_real(p: str) -> str:
     return p
 
 
+def to_read_path(real_path: str) -> str:
+    """Map a REAL host path to the path THIS process can actually read it at:
+    prefixed with the /host mount inside a container (if that prefixed path
+    exists), else returned unchanged. Native (no HOST_ROOT) is a no-op. Lets
+    code that stores real host paths still stat/size them from inside the
+    container."""
+    if not real_path:
+        return real_path
+    if HOST_ROOT and not real_path.startswith(HOST_ROOT + "/") and real_path != HOST_ROOT:
+        candidate = HOST_ROOT + real_path
+        if os.path.exists(candidate):
+            return candidate
+    return real_path
+
+
 def host_glob(patterns: List[str]) -> List[str]:
     """Real host paths matching any pattern (searched directly + under /host)."""
     seen, out = set(), []

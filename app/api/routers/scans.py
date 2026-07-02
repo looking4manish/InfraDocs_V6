@@ -83,6 +83,7 @@ def _run_scan_job(scan_id: str, cfg: Config):
         server_id=cfg.server.id,
         projects_root=cfg.paths.projects_root,
         direct_roots=cfg.paths.direct_roots,
+        project_dirs=pd.project_paths(),  # host-aware, all configured roots
     )
     attach_root_paths(applications, pd.project_paths())
     apps_written = db.replace_applications(applications)
